@@ -148,7 +148,7 @@ Put the hook in agy's user-scope `~/.gemini/config/hooks.json`, so every agy ses
   "auto-classifier": {
     "PreToolUse": [
       {
-        "matcher": "run_command",
+        "matcher": "run_command|write_to_file|replace_file_content|multi_replace_file_content",
         "hooks": [
           {
             "type": "command",
@@ -175,6 +175,11 @@ When agy runs `run_command`:
 - Safe commands run without a prompt.
 - A denied command comes back to the agent with the reason. It may explain why the concern doesn't apply and try once more, and it is told that the retry needs your approval and stays blocked if nobody is there to give it.
 - The same command again escalates (`policy.consecutiveThreshold`, default 2): agy's prompt with the finding under `request-review`, or blocked with a request to ask you under `always-proceed`.
+
+When agy writes a file (`write_to_file`, `replace_file_content`), no model is asked; where the write lands decides it:
+- Inside the session's workspace (agy's `workspacePaths`): allowed, and under tmux the watcher accepts agy's "Allow creation of this file?" / "Accept this file edit?" prompt when it shows that file.
+- Outside the workspace, or inside it under `.git/`, `.agents/`, `.gemini/`, `.claude/`, `.opencode/`, `opencode.json`, `.mcp.json`, an `.env` file, `.githooks/` or a CI workflow directory: escalated to you with the reason, since those change what runs or who is trusted.
+- The gate's own config, log, plugin and session state: denied, as for a shell command.
 
 ### 2. OpenCode
 Add the compiled plugin to your OpenCode configuration in `~/.config/opencode/plugins/`:
@@ -302,7 +307,7 @@ The classifier's own variables are part of the gate, so a command that sets any 
 
 ### What the gate does not see
 
-It gates shell commands. An agent's file-edit and file-write tools do not pass through it, so an agent that can edit files can change what a later, allowed command runs (a test file before `npm test`, a script before it is committed). The gate refuses shell commands that touch its own config, plugin and state, but pair it with your harness's own permission rules for file edits.
+It classifies shell commands. File writes are judged only by where they land (agy: see above; OpenCode: its edit, write and patch tools are refused only for the gate's own files, and otherwise left to OpenCode's permission rules), never by what they write. So an agent that can edit files in its workspace can still change what a later, allowed command runs (a test file before `npm test`, a script before it is committed); the gate does read an unreviewed script's contents when a command runs it.
 
 Every command the fast rules cannot decide, and up to `llm.maxFileChars` of an unreviewed script it runs, is sent to the configured model provider. Literal values of `*KEY=`/`*TOKEN=`/`*SECRET=`/`*PASSWORD=` assignments, bearer tokens and private keys are redacted first; that redaction is best-effort, so choose a provider you would trust with your shell history.
 

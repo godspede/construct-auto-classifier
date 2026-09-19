@@ -63,6 +63,85 @@ export function readPermissionPrompt(screen: string): PermissionPrompt | null {
   return { command, yesSelected: YES_SELECTED.test(firstOption), hasReason };
 }
 
+/**
+ * agy's prompt for a file-writing tool (write_to_file, replace_file_content):
+ *
+ *     ────────────────────────────
+ *     D:\tmp\project\notes.txt  +1 -1
+ *        1 -  old line
+ *        1 +  new line
+ *     Accept this file edit?            (or: Allow creation of this file?)
+ *     > 1. Yes, accept this change      (or: > 1. Yes, allow creation)
+ *
+ * The file is the first line after the rule above the question, followed by
+ * its +added/-removed counts.
+ */
+export interface FilePrompt {
+  /** The file agy is asking about, as displayed. */
+  path: string;
+  /** "1. Yes, ..." is the highlighted option. */
+  yesSelected: boolean;
+  /** The prompt carries a hook reason: an escalation, which is the operator's. */
+  hasReason: boolean;
+}
+
+const FILE_QUESTION = /^\s*(Allow creation of this file\?|Accept this file edit\?)\s*$/;
+const FILE_YES_SELECTED = /^\s*>\s*1\.\s*Yes, (allow creation|accept this change)\s*$/;
+const FILE_HEADER = /^\s*(\S.*?)\s{2,}\+\d+(\s+-\d+)?\s*$/;
+
+/** The last file-write prompt on the screen, or null when none is showing. */
+export function readFilePrompt(screen: string): FilePrompt | null {
+  const lines = screen.split("\n");
+  let question = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (FILE_QUESTION.test(lines[i]!)) {
+      question = i;
+      break;
+    }
+  }
+  if (question < 0) return null;
+
+  let rule = -1;
+  for (let i = question - 1; i >= 0; i--) {
+    if (RULE.test(lines[i]!)) {
+      rule = i;
+      break;
+    }
+  }
+  // agy leaves a blank line between the rule and the file line.
+  const headerLine = rule >= 0 ? lines.slice(rule + 1, question).find((l) => l.trim() !== "") ?? "" : "";
+  const header = FILE_HEADER.exec(headerLine);
+  if (!header) return null;
+
+  // A hook reason sits above the rule, as it does for a command prompt, or
+  // anywhere between the rule and the question.
+  let hasReason = lines.slice(rule, question).some((l) => /^\s*Reason:/.test(l));
+  for (let i = rule - 1; i >= 0 && i >= rule - 15; i--) {
+    if (RULE.test(lines[i]!)) break;
+    if (/^\s*Reason:/.test(lines[i]!)) hasReason = true;
+  }
+
+  const firstOption = lines.slice(question + 1).find((l) => l.trim() !== "") ?? "";
+  return { path: header[1]!, yesSelected: FILE_YES_SELECTED.test(firstOption), hasReason };
+}
+
+/** Compared the way the filesystem would: separators unified, case-folded on Windows. */
+const samePath = (a: string, b: string) => {
+  const n = (p: string) => {
+    const s = p.trim().replace(/\\/g, "/");
+    return process.platform === "win32" ? s.toLowerCase() : s;
+  };
+  return n(a) !== "" && n(a) === n(b);
+};
+
+/** The file prompt is safe to accept for `allowedPath`: that file, option 1 highlighted, no hook reason. */
+export function filePromptMatches(prompt: FilePrompt | null, allowedPath: string): boolean {
+  return prompt !== null && prompt.yesSelected && !prompt.hasReason && samePath(prompt.path, allowedPath);
+}
+
+/** What the gate allowed, and so what the watcher may accept. */
+export type AcceptTarget = { kind: "command"; command: string } | { kind: "file"; path: string };
+
 const squash = (s: string) => s.replace(/\s+/g, "");
 
 /**
@@ -88,9 +167,9 @@ export interface PaneIO {
 
 export const tmuxPane: PaneIO = {
   // -J joins lines the terminal wrapped, so a long command reads as one.
-  capture: (pane) => execFileSync("tmux", ["capture-pane", "-p", "-J", "-t", pane], { encoding: "utf-8", timeout: 2000 }),
+  capture: (pane) => execFileSync("tmux", ["capture-pane", "-p", "-J", "-t", pane], { encoding: "utf-8", timeout: 2000, windowsHide: true }),
   pressEnter: (pane) => {
-    execFileSync("tmux", ["send-keys", "-t", pane, "Enter"], { timeout: 2000 });
+    execFileSync("tmux", ["send-keys", "-t", pane, "Enter"], { timeout: 2000, windowsHide: true });
   },
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
@@ -103,23 +182,33 @@ export type AcceptResult = "accepted" | "not-shown" | "mismatch" | "error";
  */
 export async function acceptWhenShown(
   pane: string,
-  allowed: string,
+  allowed: string | AcceptTarget,
   io: PaneIO = tmuxPane,
   windowMs = 5000,
   pollMs = 100
 ): Promise<AcceptResult> {
+  const target: AcceptTarget = typeof allowed === "string" ? { kind: "command", command: allowed } : allowed;
+  // [is the prompt on screen at all, is it the one the gate allowed]
+  const look = (screen: string): [boolean, boolean] => {
+    if (target.kind === "command") {
+      const p = readPermissionPrompt(screen);
+      return [p !== null, promptMatches(p, target.command)];
+    }
+    const p = readFilePrompt(screen);
+    return [p !== null, filePromptMatches(p, target.path)];
+  };
   let sawOther = false;
   try {
     for (let waited = 0; waited <= windowMs; waited += pollMs) {
-      const prompt = readPermissionPrompt(io.capture(pane));
-      if (promptMatches(prompt, allowed)) {
-        if (!promptMatches(readPermissionPrompt(io.capture(pane)), allowed)) {
+      const [shown, matches] = look(io.capture(pane));
+      if (matches) {
+        if (!look(io.capture(pane))[1]) {
           return "mismatch";
         }
         io.pressEnter(pane);
         return "accepted";
       }
-      if (prompt) sawOther = true;
+      if (shown) sawOther = true;
       await io.sleep(pollMs);
     }
   } catch (err) {
@@ -134,14 +223,18 @@ export async function acceptWhenShown(
  * prompt. The command goes over stdin, never argv, where any process could
  * read it.
  */
-export function startAcceptWatcher(pane: string, command: string, cliPath = process.argv[1] ?? ""): void {
+export function startAcceptWatcher(pane: string, allowed: string | AcceptTarget, cliPath = process.argv[1] ?? ""): void {
+  const target: AcceptTarget = typeof allowed === "string" ? { kind: "command", command: allowed } : allowed;
   try {
     const child = spawn(process.execPath, [cliPath, "agy-accept", pane], {
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
+      // On Windows a detached child has no console, so every console program
+      // it runs (tmux, per poll) would get a fresh window that flashes open.
+      windowsHide: true,
     });
     child.on("error", (err) => log(`agy-accept: could not start the watcher: ${err.message}`));
-    child.stdin?.end(command);
+    child.stdin?.end(JSON.stringify(target));
     child.unref();
   } catch (err) {
     log(`agy-accept: could not start the watcher: ${(err as Error).message}`);
@@ -152,7 +245,15 @@ export function startAcceptWatcher(pane: string, command: string, cliPath = proc
 export async function runAcceptWatcher(pane: string): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  const command = Buffer.concat(chunks).toString("utf-8");
-  const result = await acceptWhenShown(pane, command);
-  log(`agy-accept: ${result} "${command.slice(0, 120).replace(/\n/g, " ")}"`);
+  const raw = Buffer.concat(chunks).toString("utf-8");
+  let target: AcceptTarget;
+  try {
+    const parsed = JSON.parse(raw) as AcceptTarget;
+    target = parsed.kind === "file" ? { kind: "file", path: String(parsed.path ?? "") } : { kind: "command", command: String(parsed.command ?? "") };
+  } catch {
+    target = { kind: "command", command: raw };
+  }
+  const result = await acceptWhenShown(pane, target);
+  const what = target.kind === "file" ? `file ${target.path}` : target.command;
+  log(`agy-accept: ${result} "${what.slice(0, 120).replace(/\n/g, " ")}"`);
 }

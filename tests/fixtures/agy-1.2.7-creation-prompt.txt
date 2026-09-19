@@ -1,0 +1,28 @@
+
+      ▄▀▀▄        Antigravity CLI 1.2.7
+     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+    ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (Low)
+   ▄▀▀    ▀▀▄     D:/tmp/gate-test
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+> Using your write_to_file tool (not a shell command), create inside.txt containing: hello. Then stop.
+
+▸ Thought for 4s, 236 tokens
+  No "workbench" line was detected. The goal is to create a file named "inside.txt" and write "hello" to it. Utilizi...
+
+● Create(D:/tmp/gate-test/inside.txt) (ctrl+o to expand)
+
+Create file
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+D:\tmp\gate-test\inside.txt  +1
+   1 +  hello
+
+Allow creation of this file?
+> 1. Yes, allow creation
+  2. No, deny creation
+
+  ↑/↓ Navigate · tab Amend · f full diff
+● ready @02:13 ● high | D:\tmp\gate-test
+Gemini 3.8 Flash (Low) | 0/1m | 5h 7% @03:33 | 7d 24% @Thu 17:24

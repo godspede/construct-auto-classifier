@@ -41,7 +41,7 @@ export interface GitRunner {
 }
 
 export const defaultGit: GitRunner = (args, cwd) => {
-  const r = spawnSync("git", args, { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  const r = spawnSync("git", args, { cwd, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
   return { status: r.status ?? 1, stdout: (r.stdout ?? "").trim() };
 };
 

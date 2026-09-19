@@ -5,6 +5,25 @@ import { AutoClassifier } from "../index.js";
 import { log } from "../log.js";
 import { VERSION } from "../version.js";
 import type { DecisionOutcome } from "../types.js";
+import { isProtectedPath } from "../rules/self-protection.js";
+
+/**
+ * The files an opencode file tool call would write: `filePath` for edit,
+ * write and multiedit, and every `*** Add/Update/Delete File:` (and
+ * `*** Move to:`) line of a patch.
+ */
+export function fileToolTargets(tool: string, args: unknown): string[] {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const targets: string[] = [];
+  if (typeof a.filePath === "string") targets.push(a.filePath);
+  if (tool === "patch" || tool === "apply_patch") {
+    const text = [a.patchText, a.patch, a.input].find((v) => typeof v === "string") as string | undefined;
+    for (const m of (text ?? "").matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to):\s*(.+?)\s*$/gm)) {
+      targets.push(m[1]!);
+    }
+  }
+  return targets;
+}
 
 interface OpenCodeContext {
   client?: any;
@@ -91,7 +110,21 @@ export function createOpenCodePlugin(customClassifier?: AutoClassifier, options:
 
       // Intercept tool execution before execution
       async "tool.execute.before"(input: any, output: any) {
-        if (!input || input.tool !== "bash") {
+        if (!input) {
+          return;
+        }
+        // opencode's own file tools write without a shell command, so the
+        // shell rules never see them. The one thing they may never touch is
+        // the gate itself: the same protected set a redirect is refused for.
+        if (input.tool !== "bash") {
+          for (const target of fileToolTargets(input.tool, output?.args)) {
+            if (isProtectedPath(target)) {
+              log(`deny ${input.callID || ""} ${input.tool} ${target} -- self-protection`);
+              throw new Error(
+                `Blocked: ${target} belongs to the safety classifier itself, and the agent may not change the gate that judges it. Ask the operator to make this change.`
+              );
+            }
+          }
           return;
         }
 

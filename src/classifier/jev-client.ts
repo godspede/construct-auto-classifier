@@ -197,7 +197,7 @@ export function httpTransport(cfg: JevConfig): JevTransport {
 export function commandTransport(argv: string[]): JevTransport {
   return (body, timeoutMs) =>
     new Promise((resolve, reject) => {
-      const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       const out: Buffer[] = [];
       let outBytes = 0;
       let err = "";

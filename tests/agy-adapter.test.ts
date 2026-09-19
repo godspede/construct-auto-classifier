@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { detectAgyAutoApprove, handleAgyInput } from "../src/adapters/agy.js";
+import { detectAgyAutoApprove, handleAgyInput, splitCommandLine, windowsProcessReader } from "../src/adapters/agy.js";
 import { FakeLlm } from "./helpers/fake-llm.js";
 import { tmpStateDir } from "./helpers/tmp-state.js";
 import { testConfig } from "./helpers/config.js";
@@ -156,5 +156,62 @@ describe("detectAgyAutoApprove", () => {
     } finally {
       p.kill();
     }
+  });
+});
+
+describe("detectAgyAutoApprove on Windows", () => {
+  const noSettings = path.join(os.tmpdir(), "no-such-agy-settings.json");
+  // The shape PowerShell's ConvertTo-Json gives Get-CimInstance Win32_Process.
+  const snapshot = (rows: Array<[number, number, string | null]>) => () =>
+    JSON.stringify(rows.map(([ProcessId, ParentProcessId, CommandLine]) => ({ ProcessId, ParentProcessId, CommandLine })));
+
+  it("finds the flag on agy.exe above the hook, through a shell", () => {
+    const read = windowsProcessReader(snapshot([
+      [40, 30, String.raw`"C:\Program Files\nodejs\node.exe" C:/Users/z/.config/auto-classifier/auto-classifier-cli.js agy`],
+      [30, 20, String.raw`C:\WINDOWS\system32\cmd.exe /c node ...`],
+      [20, 10, String.raw`"C:\Users\z\AppData\Local\agy\bin\agy.exe" --dangerously-skip-permissions`],
+    ]));
+    expect(detectAgyAutoApprove(noSettings, 30, read)).toContain("--dangerously-skip-permissions");
+  });
+  it("is null for agy.exe started without the flag", () => {
+    const read = windowsProcessReader(snapshot([[20, 10, String.raw`"C:\agy\bin\agy.exe"`]]));
+    expect(detectAgyAutoApprove(noSettings, 20, read)).toBeNull();
+  });
+  it("ignores the same flag on a process that is not agy", () => {
+    const read = windowsProcessReader(snapshot([
+      [20, 10, String.raw`C:\bin\claude.exe --dangerously-skip-permissions`],
+      [10, 4, null],
+    ]));
+    expect(detectAgyAutoApprove(noSettings, 20, read)).toBeNull();
+  });
+  it("refuses to guess when the process table cannot be read", () => {
+    const read = windowsProcessReader(() => {
+      throw new Error("powershell.exe not found");
+    });
+    expect(detectAgyAutoApprove(noSettings, 20, read)).toContain("could not check");
+  });
+  it("takes one snapshot for the whole walk", () => {
+    let calls = 0;
+    const read = windowsProcessReader(() => {
+      calls++;
+      return snapshot([[30, 20, "cmd.exe"], [20, 10, String.raw`C:\agy.exe`]])();
+    });
+    detectAgyAutoApprove(noSettings, 30, read);
+    expect(calls).toBe(1);
+  });
+  it.if(process.platform === "win32")("reads the real process table", () => {
+    // This test process's own parent is in the snapshot, so the walk runs
+    // and, finding no agy above it, ends without a reason.
+    expect(detectAgyAutoApprove(noSettings, process.ppid, windowsProcessReader())).toBeNull();
+  });
+});
+
+describe("splitCommandLine", () => {
+  it("keeps a quoted path with spaces as one argument", () => {
+    expect(splitCommandLine(String.raw`"C:\Program Files\agy\agy.exe" --dangerously-skip-permissions x`)).toEqual([
+      String.raw`C:\Program Files\agy\agy.exe`,
+      "--dangerously-skip-permissions",
+      "x",
+    ]);
   });
 });
