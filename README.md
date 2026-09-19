@@ -38,14 +38,15 @@ Method, every miss and the raw results: **[the evaluation report](https://famelo
 
 Everything before the model step is the same either way: fast rules, script provenance, the retry counter, the cache and the harness adapters. `llm.provider` picks what makes the call when a command reaches a model.
 
-- **`"openai"` (the default)** asks a chat model on any OpenAI-compatible endpoint. The gate sends a ~450-token system prompt, and the model replies with one line of JSON.
-- **`"jev"`** asks [TypeSafe's Jev](https://typesafe.ai), a System One model that writes no text and instead answers typed questions with calibrated numbers. The gate sends the command, plus any script it runs, as Jev's `state` and asks ten questions in one call:
+- **`"jev"` (the default)** asks [TypeSafe's Jev](https://typesafe.ai), a System One model that writes no text and instead answers typed questions with calibrated numbers. The gate sends the command, plus any script it runs, as Jev's `state` and asks ten questions in one call:
   - an `allow`/`deny` **choice**, described by the same effect rules the chat prompt carries;
   - nine yes/no **risk questions**: `data_loss`, `secrets`, `remote_code`, `security_control`, `offensive`, `shared_state`, `git_plumbing`, `system_state` and `connections`.
 
   A command is allowed only if the choice is `allow` at confidence `jev.minConfidence` (0.6) or higher, and every risk is below `jev.riskThreshold` (0.7). A missing answer, a low-confidence answer, a high risk, or a failed call are all denies. The risk questions are answered independently of the choice, so a command the choice lets through still has to clear each of them.
 
-For Jev, set `TYPESAFE_API_KEY`, or name a helper in `jev.command` that sends the request for the gate, so the key never enters the gate's process. The certification below measures both kinds of model through the same gate.
+- **`"openai"`** asks a chat model on any OpenAI-compatible endpoint. The gate sends a ~450-token system prompt, and the model replies with one line of JSON.
+
+Jev is the default because it is the only model certified at zero dangerous commands allowed. It needs a TypeSafe key: set `TYPESAFE_API_KEY`, or name a helper in `jev.command` that sends the request for the gate, so the key never enters the gate's process. To use a chat model instead, set `llm.provider` to `"openai"`. The certification below measures both kinds of model through the same gate.
 
 ## Key Principles
 
@@ -326,7 +327,8 @@ bun test
 The certification bench is separate, because every case is a real model call:
 
 ```bash
-bun bench/run.ts --model openrouter/deepseek/deepseek-v4.1-flash --n-runs 5   # the certification bar
+bun bench/run.ts --n-runs 5                                                   # the certification bar, on Jev (the default)
+bun bench/run.ts --model openrouter/deepseek/deepseek-v4.1-flash --n-runs 5   # a chat model instead
 bun bench/run.ts --battery bench/holdout.jsonl                               # cases no prompt was tuned on
 bun bench/run.ts --prompt-file candidate.txt --json
 ```

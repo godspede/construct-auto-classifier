@@ -78,13 +78,13 @@ describe("JevClient", () => {
 });
 
 describe("createClassifier", () => {
-  test("the chat client by default, Jev when the provider is jev", () => {
+  test("Jev by default, the chat client when the provider is openai", () => {
     const cfg = testConfig();
     const shipped = loadConfig(path.join(import.meta.dir, "..", "bench", "bench-config.jsonc"));
-    expect(shipped.llm.provider).toBe("openai");
+    expect(shipped.llm.provider).toBe("jev");
     expect(shipped.jev.model).toBe("jev-1.13.0");
-    expect(createClassifier(shipped)).toBeInstanceOf(LlmClient);
-    expect(createClassifier({ ...cfg, llm: { ...cfg.llm, provider: "jev" } })).toBeInstanceOf(JevClient);
+    expect(createClassifier(shipped)).toBeInstanceOf(JevClient);
+    expect(createClassifier({ ...cfg, llm: { ...cfg.llm, provider: "openai" } })).toBeInstanceOf(LlmClient);
   });
 });
 

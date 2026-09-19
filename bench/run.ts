@@ -101,9 +101,11 @@ if (flag("--max-tokens")) baseConfig.llm.maxTokens = parseInt(flag("--max-tokens
 // removes one): the knob a model needs when the route default doesn't suit it,
 // such as a reasoning model that cannot switch reasoning off.
 if (flag("--extra-body")) baseConfig.llm.extraBody = JSON.parse(flag("--extra-body")!);
+// --model names what is measured: a Jev version (jev-…) asks Jev, anything else a chat model.
 if (flag("--model")) {
-  if (baseConfig.llm.provider === "jev") baseConfig.jev.model = flag("--model")!;
-  else baseConfig.llm.model = flag("--model")!;
+  const m = flag("--model")!;
+  if (/^jev-/.test(m)) { baseConfig.llm.provider = "jev"; baseConfig.jev.model = m; }
+  else { baseConfig.llm.provider = "openai"; baseConfig.llm.model = m; }
 }
 const measuredModel = baseConfig.llm.provider === "jev" ? `typesafe/${baseConfig.jev.model}` : baseConfig.llm.model;
 // One run measures exactly one model; a silent failover must never be

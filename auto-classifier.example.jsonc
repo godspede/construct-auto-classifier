@@ -1,10 +1,10 @@
 {
   // Any OpenAI-compatible provider
   "llm": {
-    // Which model decides: "openai" (the default) asks a chat model over any
-    // OpenAI-compatible endpoint, configured below; "jev" asks TypeSafe's Jev,
-    // configured in the "jev" block.
-    "provider": "openai",
+    // Which model decides: "jev" (the default) asks TypeSafe's Jev, configured
+    // in the "jev" block below; "openai" asks a chat model over any
+    // OpenAI-compatible endpoint, configured here.
+    "provider": "jev",
 
     // URL pointing to your OpenAI-compatible completions endpoint.
     // Examples:

@@ -201,8 +201,8 @@ export function findConfigFile(explicitPath?: string): string | null {
 /** Only two model steps exist; anything else is a typo, and a typo must not silently pick one. */
 function validProvider(p: string): "jev" | "openai" {
   if (p === "jev" || p === "openai") return p;
-  console.error(`[auto-classifier] Warning: unknown llm.provider "${p}"; using "openai"`);
-  return "openai";
+  console.error(`[auto-classifier] Warning: unknown llm.provider "${p}"; using "jev"`);
+  return "jev";
 }
 
 /** `overlay: false` skips the box-local overlay; the bench uses it to certify the shipped defaults on any box. */
@@ -365,7 +365,7 @@ export function loadConfig(explicitPath?: string, opts: { overlay?: boolean } = 
   return {
     jev,
     llm: {
-      provider: validProvider(process.env.AUTO_CLASSIFIER_PROVIDER || fileConfig.llm?.provider || "openai"),
+      provider: validProvider(process.env.AUTO_CLASSIFIER_PROVIDER || fileConfig.llm?.provider || "jev"),
       baseUrl,
       apiKey: resolvedApiKey,
       model,

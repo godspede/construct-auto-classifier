@@ -69,7 +69,7 @@ Environment Variables:
   AUTO_CLASSIFIER_HEADLESS    1 = no one can answer a prompt here; escalations deny and say so
   AUTO_CLASSIFIER_LOG         Log file path (default ~/.config/auto-classifier/auto-classifier.log; empty disables)
   AUTO_CLASSIFIER_SYSTEM_PROMPT_FILE  Replace the built-in system prompt (bench use)
-  AUTO_CLASSIFIER_PROVIDER    "openai" (a chat model, the default) | "jev" (TypeSafe's Jev)
+  AUTO_CLASSIFIER_PROVIDER    "jev" (TypeSafe's Jev, the default) | "openai" (a chat model)
   TYPESAFE_API_KEY            Jev API key
   TYPESAFE_BASE_URL           Jev API root (default https://api.typesafe.ai)
   AUTO_CLASSIFIER_JEV_COMMAND Helper that sends the Jev request for this process, as a JSON argv array
