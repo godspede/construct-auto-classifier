@@ -162,17 +162,19 @@ Put the hook in agy's user-scope `~/.gemini/config/hooks.json`, so every agy ses
 }
 ```
 
-agy's own approval setting decides how an escalation reaches you. A hook can block a command but cannot skip agy's prompt, so pick one of:
+agy's own approval setting decides how an escalation reaches you, and a hook can block a command but cannot skip agy's prompt. The setup that prompts you only for the gate's escalations:
 
-- **`"toolPermission": "always-proceed"`** in `~/.gemini/antigravity-cli/settings.json` (recommended). Commands the gate allows run without a prompt. agy would approve an escalation's prompt by itself, so the gate blocks the command instead and tells the agent to stop and ask you. If you agree, run it yourself.
-- **`"toolPermission": "request-review"`**. agy asks you before every command, including the ones the gate allows. The gate's denials never reach you, and an escalation arrives as agy's prompt with the gate's finding as the reason.
+- **`"toolPermission": "request-review"`** in `~/.gemini/antigravity-cli/settings.json`, and agy started **without** `--dangerously-skip-permissions`. agy now asks before every command.
+- **Run agy inside tmux, with `"agy": { "autoAcceptInTmux": true }`** in the gate's config. When the gate allows a command, it starts a short-lived watcher on agy's tmux pane that presses Enter on agy's prompt, but only if the prompt shows exactly that command, with "1. Yes, run command" still highlighted and no hook reason on it. An escalation carries the gate's finding as its reason, so it stays up for you.
 
-`--dangerously-skip-permissions` behaves like `always-proceed` here: the gate notices either one and blocks an escalation rather than let agy approve it.
+It fails toward a prompt. No watcher starts unless the gate computed an allow, so a gate that crashes, times out or isn't installed leaves every command to you; a watcher that can't read the pane, sees any other command, or sees nothing within five seconds sends no key.
+
+Without tmux, choose between `request-review` (you answer every command) and `"always-proceed"` (allowed commands run; agy would approve an escalation by itself, so the gate blocks it instead and tells the agent to stop and ask you, and you run it yourself if you agree). `--dangerously-skip-permissions` behaves like `always-proceed`: the gate notices either one.
 
 When agy runs `run_command`:
 - Safe commands run without a prompt.
 - A denied command comes back to the agent with the reason. It may explain why the concern doesn't apply and try once more, and it is told that the retry needs your approval and stays blocked if nobody is there to give it.
-- The same command again escalates (`policy.consecutiveThreshold`, default 2): blocked with a request to ask you under `always-proceed`, or a prompt with the finding under `request-review`.
+- The same command again escalates (`policy.consecutiveThreshold`, default 2): agy's prompt with the finding under `request-review`, or blocked with a request to ask you under `always-proceed`.
 
 ### 2. OpenCode
 Add the compiled plugin to your OpenCode configuration in `~/.config/opencode/plugins/`:

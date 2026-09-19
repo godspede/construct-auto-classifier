@@ -75,12 +75,22 @@ export interface JevConfig {
   timeoutMs?: number;
 }
 
+export interface AgyConfig {
+  /**
+   * Inside tmux, press Enter on agy's own permission prompt for a command the
+   * gate allowed, so that with `toolPermission: "request-review"` the only
+   * prompts left are the gate's escalations. Default false.
+   */
+  autoAcceptInTmux?: boolean;
+}
+
 export interface AppConfig {
   llm: LlmConfig;
   jev: JevConfig;
   policy: PolicyConfig;
   rules: RulesConfig;
   telemetry: TelemetryConfig;
+  agy?: AgyConfig;
 }
 
 export interface FileContext {

@@ -390,5 +390,6 @@ export function loadConfig(explicitPath?: string, opts: { overlay?: boolean } = 
       scratchWriteRoots,
     },
     telemetry,
+    agy: { autoAcceptInTmux: (fileConfig as Record<string, any>).agy?.autoAcceptInTmux === true },
   };
 }

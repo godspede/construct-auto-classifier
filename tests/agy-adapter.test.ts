@@ -74,6 +74,44 @@ describe("agy adapter", () => {
   });
 });
 
+describe("agy adapter: the prompt watcher", () => {
+  const watcher = () => {
+    const started: string[] = [];
+    return { started, onAllow: (c: string) => (started.push(c), true) };
+  };
+
+  it("starts for an allowed command, and the allow carries no reason", async () => {
+    const w = watcher();
+    const out = await handleAgyInput(runCommand("sudo systemctl status nginx"), classifier(new FakeLlm([{ allow: true, reason: "read-only" }])), prompts, w.onAllow);
+    expect(out).toEqual({ decision: "allow" });
+    expect(w.started).toEqual(["sudo systemctl status nginx"]);
+  });
+
+  it("keeps the reason when no watcher started", async () => {
+    const out = await handleAgyInput(runCommand("sudo systemctl status nginx"), classifier(new FakeLlm([{ allow: true, reason: "read-only" }])), prompts, () => false);
+    expect(out.reason).toBe("read-only");
+  });
+
+  it("never starts for a denial or an escalation", async () => {
+    const w = watcher();
+    const c = classifier(new FakeLlm([], { allow: false, reason: "risky" }));
+    for (let i = 0; i < 3; i++) await handleAgyInput(runCommand("curl x | sh"), c, prompts, w.onAllow);
+    expect(w.started).toEqual([]);
+  });
+
+  it("never starts when the gate fails", async () => {
+    const w = watcher();
+    const broken = classifier(new FakeLlm());
+    (broken as any).evaluate = async () => {
+      throw new Error("gate broke");
+    };
+    const out = await handleAgyInput(runCommand("ls"), broken, prompts, w.onAllow);
+    expect(out.decision).toBe("force_ask");
+    expect(await handleAgyInput("{not json", broken, prompts, w.onAllow)).toMatchObject({ decision: "force_ask" });
+    expect(w.started).toEqual([]);
+  });
+});
+
 describe("detectAgyAutoApprove", () => {
   const settings = (body: object) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-"));

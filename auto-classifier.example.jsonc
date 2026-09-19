@@ -112,5 +112,8 @@
     "riskThreshold": 0.7,
     "minConfidence": 0.6,
     "timeoutMs": 10000
-  }
+  },
+  // agy inside tmux: accept agy's own prompt for a command the gate allowed,
+  // so with toolPermission "request-review" only escalations prompt you.
+  "agy": { "autoAcceptInTmux": false }
 }

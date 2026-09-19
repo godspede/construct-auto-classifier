@@ -1,4 +1,5 @@
 import { runAgyHook } from "./adapters/agy.js";
+import { runAcceptWatcher } from "./adapters/agy-accept.js";
 import { AutoClassifier } from "./index.js";
 import { loadConfig } from "./config.js";
 import { VERSION } from "./version.js";
@@ -10,6 +11,12 @@ async function main() {
   if (command === "agy") {
     // Run Antigravity PreToolUse hook
     await runAgyHook();
+    return;
+  }
+
+  if (command === "agy-accept" && args[1]) {
+    // The watcher the agy hook starts for an allowed command (agy-accept.ts).
+    await runAcceptWatcher(args[1]);
     return;
   }
 

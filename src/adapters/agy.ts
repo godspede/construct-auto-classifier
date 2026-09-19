@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AutoClassifier } from "../index.js";
 import { log } from "../log.js";
+import { startAcceptWatcher } from "./agy-accept.js";
 import type { AgyPreToolUseInput, AgyPreToolUseOutput } from "../types.js";
 
 /**
@@ -58,9 +59,10 @@ export function detectAgyAutoApprove(
 export async function handleAgyInput(
   rawInput: string,
   classifier: AutoClassifier,
-  autoApprove: () => string | null = detectAgyAutoApprove
+  autoApprove: () => string | null = detectAgyAutoApprove,
+  onAllow: (command: string) => boolean = (command) => watchForPrompt(classifier, command)
 ): Promise<AgyPreToolUseOutput> {
-  const out = await decide(rawInput, classifier);
+  const out = await decide(rawInput, classifier, onAllow);
   if (out.decision !== "ask" && out.decision !== "force_ask") {
     return out;
   }
@@ -80,7 +82,25 @@ export async function handleAgyInput(
   };
 }
 
-async function decide(rawInput: string, classifier: AutoClassifier): Promise<AgyPreToolUseOutput> {
+/**
+ * With `agy.autoAcceptInTmux`, start the watcher that accepts agy's prompt for
+ * this allowed command (agy-accept.ts). Only inside tmux, where the pane agy
+ * runs in is known.
+ */
+function watchForPrompt(classifier: AutoClassifier, command: string): boolean {
+  const pane = process.env.TMUX_PANE;
+  if (!pane || !process.env.TMUX || !classifier.getConfig().agy?.autoAcceptInTmux) {
+    return false;
+  }
+  startAcceptWatcher(pane, command);
+  return true;
+}
+
+async function decide(
+  rawInput: string,
+  classifier: AutoClassifier,
+  onAllow: (command: string) => boolean
+): Promise<AgyPreToolUseOutput> {
   const trimmed = rawInput.trim();
   if (!trimmed) {
     // Empty input, allow
@@ -111,6 +131,11 @@ async function decide(rawInput: string, classifier: AutoClassifier): Promise<Agy
   try {
     const cwd = typeof input.toolCall?.args?.Cwd === "string" && input.toolCall.args.Cwd ? input.toolCall.args.Cwd : undefined;
     const outcome = await classifier.evaluate(command, sessionId, undefined, { cwd });
+    if (outcome.decision === "allow" && onAllow(command)) {
+      // No reason: the watcher reads a reason on agy's prompt as an
+      // escalation, and leaves it for the operator.
+      return { decision: "allow" };
+    }
     return { decision: outcome.decision, reason: outcome.reason };
   } catch (err) {
     log(`agy: evaluation error: ${(err as Error).message}`);
