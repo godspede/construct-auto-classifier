@@ -1,0 +1,116 @@
+{
+  // Any OpenAI-compatible provider
+  "llm": {
+    // Which model decides: "openai" (the default) asks a chat model over any
+    // OpenAI-compatible endpoint, configured below; "jev" asks TypeSafe's Jev,
+    // configured in the "jev" block.
+    "provider": "openai",
+
+    // URL pointing to your OpenAI-compatible completions endpoint.
+    // Examples:
+    //   - Local Ollama: "http://127.0.0.1:11434/v1"
+    //   - Local vLLM: "http://127.0.0.1:8000/v1"
+    //   - OpenRouter: "https://openrouter.ai/api/v1"
+    //   - Groq: "https://api.groq.com/openai/v1"
+    //   - OpenAI: "https://api.openai.com/v1"
+    "baseUrl": "https://openrouter.ai/api/v1",
+
+    // API Key. Can be literal or load from environment: "env:OPENROUTER_API_KEY"
+    "apiKey": "env:OPENROUTER_API_KEY",
+
+    // Primary model to evaluate commands. Reasoning models are fine: the client switches their
+    // hidden reasoning off for the endpoint it talks to, so the reply is not truncated.
+    "model": "deepseek/deepseek-v4.1-flash",
+
+    // Optional fallback model if the primary model fails or times out
+    // "fallbackModel": "z-ai/glm-5.3-flash",
+
+    // Optional cheaper model asked first; its allow is final, its deny is re-asked of "model"
+    // "triageModel": "<a smaller, cheaper model id>",
+
+    // Completion budget for the one-line JSON reply
+    "maxTokens": 120,
+
+    // Extra request fields merged over the per-route reasoning-off defaults; a null value removes a default
+    // "extraBody": { "reasoning": null },
+
+    // Request timeout in milliseconds
+    "timeoutMs": 15000,
+
+    // Cap on script content shown to the model when a script is not landed on its repo's default branch
+    "maxFileChars": 2000
+  },
+
+  // Security & Escalation Policy
+  "policy": {
+    // "both": Auto-retries initial denials with feedback, then escalates to interactive prompt on consecutive denials.
+    // "auto-retry": Never prompts user interactively; denies with explanation.
+    // "ask-user": Always prompts user interactively on any denial.
+    "denyMode": "both",
+
+    // Number of consecutive denials before escalating to interactive user confirmation
+    "consecutiveThreshold": 3,
+
+    // Time window in milliseconds to group consecutive denials (default: 5 minutes)
+    "slidingWindowMs": 300000,
+
+    // When true, denial messages instruct the agent to explain its reasoning to the user before retrying
+    "instructAgentOnDenial": true,
+
+    // When true, no operator can answer a prompt on this box: an escalation becomes a denial that
+    // tells the agent to stop and report, instead of a permission nobody will ever answer
+    "headless": false,
+
+    // A script tracked in git and byte-identical to its repo's remote default branch went through
+    // that branch's merge gate: allow it without the model. Set false to classify every script.
+    "trustLandedScripts": true
+  },
+
+  // Deterministic Fast Rules
+  "rules": {
+    // Hard blocks evaluated via regex before LLM call
+    "fastDeny": [
+      "^\\s*mkfs(\\.[a-z0-9]+)?\\s+",
+      "^\\s*dd\\s+.*of=\\/dev\\/(sd[a-z]|nvme[0-9]n[0-9]|vd[a-z])",
+      ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\};\\s*:"
+    ],
+
+    // Fast allows evaluated via regex before LLM call (skips LLM entirely for <1ms latency).
+    // A rule only ever vouches for the exact verb it names -- `git branch` below
+    // is deliberately list-shaped only (no -D/-d/-f/-m/-M/--delete/--force):
+    // a wider `git\s+branch\b` would fast-allow `git branch -D main` too.
+    "fastAllow": [
+      "^\\s*git\\s+(status|diff|log|show)\\b",
+      "^\\s*git\\s+branch(?:\\s+(?:-a|-r|-v|-vv|--list|--all|--remotes|--show-current|--verbose))*\\s*$",
+      "^\\s*ls(\\s+-[a-zA-Z0-9]+)*(\\s+[^\\s;&|]+)?$",
+      "^\\s*pwd$",
+      "^\\s*whoami$",
+      "^\\s*cargo\\s+(check|clippy)$",
+      "^\\s*pytest(\\s+[^;&|]+)?$",
+      "^\\s*npm\\s+test\\b"
+    ],
+
+    // Path prefixes a fast-allowed command may redirect output into; a redirect anywhere else defers to the LLM
+    "scratchWriteRoots": ["/tmp/"]
+  },
+
+  // One JSON line per decision (command, stage, verdict, reason, latency). Path "" means
+  // ~/.config/auto-classifier/telemetry.jsonl. The classifier's own log is beside it.
+  "telemetry": { "enabled": true, "path": "" },
+
+  // Used when llm.provider is "jev". Jev answers typed questions instead of
+  // writing text: the gate asks one allow/deny choice and nine risk questions
+  // in a single call, and allows only when the choice is "allow" at
+  // minConfidence or more and every risk is below riskThreshold.
+  "jev": {
+    "baseUrl": "https://api.typesafe.ai",
+    "apiKey": "env:TYPESAFE_API_KEY",
+    // Or keep the key out of this process: a helper that reads the request body
+    // on stdin and prints Jev's response.
+    // "command": ["/usr/local/bin/jev-request"],
+    "model": "jev-1.13.0",
+    "riskThreshold": 0.7,
+    "minConfidence": 0.6,
+    "timeoutMs": 10000
+  }
+}

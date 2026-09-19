@@ -1,0 +1,52 @@
+{
+  "name": "construct-auto-classifier",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Effect-based safety gate for AI coding agents' shell commands (OpenCode, Antigravity): fast structural rules, then a model (TypeSafe's Jev or a chat LLM) that judges what a command does, not what it is called.",
+  "license": "Apache-2.0",
+  "author": "godspede",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/godspede/construct-auto-classifier.git"
+  },
+  "homepage": "https://github.com/godspede/construct-auto-classifier#readme",
+  "bugs": {
+    "url": "https://github.com/godspede/construct-auto-classifier/issues"
+  },
+  "engines": {
+    "node": ">=18",
+    "bun": ">=1.2"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "auto-classifier": "./bin/auto-classifier.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./opencode": "./dist/opencode-plugin.js",
+    "./opencode-plugin": "./dist/opencode-plugin.js"
+  },
+  "scripts": {
+    "build": "bun build ./src/cli.ts --outfile ./dist/cli.js --target node && bun build ./src/adapters/opencode.ts --outfile ./dist/opencode-plugin.js --target node && bun build ./src/index.ts --outfile ./dist/index.js --target node",
+    "build:binary": "bun build --compile --minify ./src/cli.ts --outfile ./dist/auto-classifier",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "keywords": [
+    "ai",
+    "security",
+    "llm",
+    "classifier",
+    "antigravity",
+    "opencode",
+    "safety",
+    "guardrails",
+    "jev",
+    "typesafe"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  }
+}

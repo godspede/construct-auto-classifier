@@ -1,0 +1,6 @@
+// The configuration the battery certifies: the package's shipped defaults,
+// with nothing from this machine's ~/.config. Point the run at a model with
+// the environment (AUTO_CLASSIFIER_BASE_URL, AUTO_CLASSIFIER_API_KEY) and
+// --model, or at Jev with AUTO_CLASSIFIER_PROVIDER=jev plus TYPESAFE_API_KEY or
+// AUTO_CLASSIFIER_JEV_COMMAND; every rule, threshold and policy is the default.
+{}
