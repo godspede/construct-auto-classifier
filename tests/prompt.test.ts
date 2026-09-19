@@ -12,10 +12,8 @@ describe("Prompt Generator", () => {
   });
 
   it("lets reversibility, not the act of touching config, decide a service-config change", () => {
-    // Regression: "overwriting ... service configuration" as an unqualified DENY
-    // blocked `sudo tailscale serve --bg --https=<port> http://<fqdn>:<port>`,
-    // which one `tailscale serve --https=<port> off` undoes, so an ordinary,
-    // requested port move reached the model and came back denied.
+    // A config change one command undoes (`tailscale serve --https=<port> off`)
+    // is reversible, so touching service configuration is not by itself a DENY.
     const prompt = buildSystemPrompt();
     expect(prompt).toContain("trivially reversible");
     expect(prompt).toContain("publishing or retiring a listener");

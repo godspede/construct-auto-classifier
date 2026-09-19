@@ -66,8 +66,7 @@ export function markSession(sessionId: string): string {
  * a hidden chain-of-thought. A classifier reply is one short JSON object; a
  * model that reasons first returns it truncated, or returns nothing, under any
  * sane max_tokens. Keyed by the route prefix a routing gateway reads (the text
- * before the first `/` of the model id); each was probed to reach the provider and to
- * zero its reasoning tokens.
+ * before the first `/` of the model id).
  */
 export const ROUTE_REQUEST_DEFAULTS: Record<string, Record<string, unknown>> = {
   openrouter: { reasoning: { enabled: false } },

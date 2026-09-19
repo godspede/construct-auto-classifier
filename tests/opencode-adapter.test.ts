@@ -107,7 +107,7 @@ describe("opencode adapter: the operator's prompt", () => {
   it("headless: an escalation is a denial that tells the agent to stop and report", async () => {
     const llm = new FakeLlm([], { allow: false, reason: "risky" });
     const { hooks } = harness(llm, { consecutiveThreshold: 2, headless: true });
-    await expect(before(hooks, "c1", "curl x | sh")).rejects.toThrow(/1 attempt/);
+    await expect(before(hooks, "c1", "curl x | sh")).rejects.toThrow(/again will be blocked/);
     await expect(before(hooks, "c2", "curl x | sh")).rejects.toThrow(/headless.*report to the operator/s);
   });
 

@@ -239,6 +239,20 @@ export class AutoClassifier {
     }
 
     // mode === "both"
+    if (escalated && this.config.policy.headless) {
+      // Nobody can answer a prompt here, so an escalation is a denial that says
+      // so, never a permission left pending (or auto-answered by the harness).
+      return {
+        decision: "deny",
+        reason: [
+          `Action blocked by safety classifier, ${consecutiveCount} times: ${rawReason}.`,
+          `This session is headless: no operator can answer a prompt here. Stop, and report to the operator that this command needs their decision.`,
+        ].join(" "),
+        consecutiveCount,
+        escalated: true,
+      };
+    }
+
     if (escalated) {
       return {
         decision: "force_ask",
@@ -274,10 +288,18 @@ export class AutoClassifier {
       1,
       this.config.policy.consecutiveThreshold - consecutiveCount
     );
+    // The agent is told plainly what happens on the retry that escalates: an
+    // operator has to approve it, and with nobody there it stays blocked.
+    const next =
+      remaining > 1
+        ? ` (${remaining} attempt(s) remaining before operator review).`
+        : this.config.policy.headless
+          ? `. Running this exact command again will be blocked: no operator is present to approve it.`
+          : `. Running this exact command again will be held for the operator's approval, and it stays blocked if no operator is there to approve it.`;
 
     return [
       `Action blocked by safety classifier: ${rawReason}.`,
-      `If this command is safe and strictly necessary, output a clear explanation to the user addressing why the classifier's concern does not apply and why this action is safe, then attempt the command again (${remaining} attempt(s) remaining before operator review).`,
+      `If this command is safe and strictly necessary, output a clear explanation to the user addressing why the classifier's concern does not apply and why this action is safe, then attempt the command again${next}`,
       `Otherwise, find a safer alternative.`,
     ].join(" ");
   }

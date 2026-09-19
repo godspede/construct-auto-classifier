@@ -49,7 +49,7 @@
     "denyMode": "both",
 
     // Number of consecutive denials before escalating to interactive user confirmation
-    "consecutiveThreshold": 3,
+    "consecutiveThreshold": 2,
 
     // Time window in milliseconds to group consecutive denials (default: 5 minutes)
     "slidingWindowMs": 300000,

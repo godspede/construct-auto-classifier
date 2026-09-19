@@ -279,7 +279,7 @@ export function loadConfig(explicitPath?: string, opts: { overlay?: boolean } = 
   const consecutiveThreshold =
     fileConfig.policy?.consecutiveThreshold ??
     (fileConfig as Record<string, any>).escalation?.consecutive ??
-    3;
+    2;
 
   const slidingWindowMs =
     fileConfig.policy?.slidingWindowMs ?? 300000; // 5 minutes

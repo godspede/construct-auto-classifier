@@ -53,7 +53,7 @@ describe("loadConfig defaults", () => {
     const c = load("{}");
     expect(c.policy).toEqual({
       denyMode: "both",
-      consecutiveThreshold: 3,
+      consecutiveThreshold: 2,
       slidingWindowMs: 300000,
       instructAgentOnDenial: true,
       headless: false,

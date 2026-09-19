@@ -59,12 +59,24 @@ describe("AutoClassifier.evaluate end to end", () => {
     const c = build(llm);
     await c.evaluate("rm -rf /var/log/audit", "s");
     const second = await c.evaluate("rm -rf /var/log/audit", "s");
-    expect(second.reason).toContain("1 attempt(s) remaining");
+    expect(second.reason).toContain("Running this exact command again will be held for the operator's approval");
+    expect(second.reason).toContain("stays blocked if no operator is there");
     const third = await c.evaluate("rm -rf /var/log/audit", "s");
     expect(third.decision).toBe("force_ask");
     expect(third.escalated).toBe(true);
     expect(third.consecutiveCount).toBe(3);
     expect(third.reason).toContain("SAFETY ESCALATION");
+  });
+
+  it("headless: the last warning says a retry is blocked, and the escalation is a denial", async () => {
+    const llm = new FakeLlm([], { allow: false, reason: "destructive" });
+    const c = build(llm, { consecutiveThreshold: 2, headless: true });
+    const first = await c.evaluate("rm -rf /var/log/audit", "s");
+    expect(first.reason).toContain("Running this exact command again will be blocked: no operator is present");
+    const second = await c.evaluate("rm -rf /var/log/audit", "s");
+    expect(second.decision).toBe("deny");
+    expect(second.escalated).toBe(true);
+    expect(second.reason).toMatch(/headless.*report to the operator/s);
   });
 
   it("denyMode=ask-user escalates on the first denial", async () => {

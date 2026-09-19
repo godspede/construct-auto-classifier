@@ -12,7 +12,12 @@ Unlike naive keyword filters that blindly reject `sudo` or `/etc`, `construct-au
 ## Certification
 
 <!-- CERT:START -->
-Each model is certified through the whole gate on two test sets: a **main test** (113 real agent commands) and a **blind test** (82 commands written separately and never used for tuning), five passes each, 975 decisions per model. The bar is **zero dangerous commands allowed**.
+Each model is certified through the whole gate on two test sets, five passes each, 975 decisions per model:
+
+- a **main test**: 113 real agent commands, written by Claude Opus 5. The gate's prompt, rules and Jev's questions were developed against it.
+- a **blind test**: 82 commands written separately by Qwen3.5 397B from a plain-English policy, never used for tuning, and frozen before any model ran on it.
+
+The bar is **zero dangerous commands allowed**. Results from September 18–19, 2026:
 
 | Model | Provider | Dangerous commands allowed | Caught | Decisions correct | $ per 1,000 decisions |
 |---|---|--:|--:|--:|--:|
@@ -85,17 +90,16 @@ On opencode, an escalation leaves the permission prompt unanswered so the operat
 
 **Two gates cannot share one prompt.** If another command-approval plugin (`auto-mode.js`) sits beside this one in `~/.config/opencode/plugins/`, both answer `permission.asked`, and the other can reject an escalation before the operator sees it. The plugin logs a warning on first use when it finds one; keep one gate.
 
-**A prompt on a headless box is a prompt nobody answers.** Set `policy.headless: true` (or `AUTO_CLASSIFIER_HEADLESS=1`) on a box with no operator at the keyboard: an escalation then becomes a denial that tells the agent to stop and report, instead of a permission left pending, or auto-rejected by `opencode run` as if the operator had declined.
+**A prompt on a headless box is a prompt nobody answers.** Set `policy.headless: true` (or `AUTO_CLASSIFIER_HEADLESS=1`) on a box with no operator at the keyboard: an escalation then becomes a denial that tells the agent to stop and report, instead of a permission left pending, or auto-rejected by `opencode run` as if the operator had declined. This holds on every harness, and the agent's first denial already tells it that a retry will be blocked.
 
-### Token economy
+### What it costs
 
-Every classification that reaches the model is paid for, so the design spends model calls only where a regex or git cannot answer, and makes each call as small as it can be:
+Most commands never reach a model. The fast rules settle the obvious ones, a script identical to its repo's default branch is allowed without a call, and a repeated command inside the sliding window reuses its verdict. A denial's retry never asks the model again, and a denial caused by an unreachable model is not reused. Only what is left is paid for.
 
-- **Defaults to DeepSeek V4.1 Flash on OpenRouter** (`https://openrouter.ai/api/v1`, model `deepseek/deepseek-v4.1-flash`). It reasons by default, and a reasoning model spends the completion budget on a hidden chain-of-thought and returns the JSON truncated or empty. The client therefore sends the field that switches reasoning off for the endpoint it is talking to (`reasoning: {enabled: false}` on OpenRouter, `thinking: {type: "disabled"}` on DeepSeek's own API, `reasoning_effort: "none"` on Ollama Cloud), chosen by the endpoint's host or, behind a gateway that routes on a prefix, by the model id's `openrouter/`, `deepseek/` or `ollama-cloud/` prefix. `llm.extraBody` merges over those defaults; a `null` value removes one.
-- **The reply is one short JSON object**: `reason` is capped at 20 words in the prompt and `llm.maxTokens` defaults to 120.
-- **The system prompt is ~450 tokens.** Any prompt change re-runs the certification battery (`bun bench/run.ts`); a prompt that scores lower than the one it replaces does not ship.
-- **A verdict is remembered for the sliding window.** The same command (and the same script content, when a script was judged) inside the window gets the same answer without a second call; a denial's retry never re-asks the model at all. A denial that was really an unreachable model is counted but not reused.
-- **Optional cheaper first pass**: set `llm.triageModel` to a small or local model. Its allow is final; its deny, an unparseable reply, or an error hands the same prompt to `llm.model`. Allows are the large majority of real traffic, so the expensive model is reached mainly by commands that deserve it.
+- **Jev (the default)** costs about **$0.047 per 1,000 decisions** that reach it, at TypeSafe's published input price. That is roughly half of DeepSeek 4.1 Flash on DeepSeek's own API, the cheapest chat model that came close on safety. Every model's measured cost is in the certification table above.
+- **Chat models** get a ~450-token system prompt and reply with one short JSON object (`llm.maxTokens` defaults to 120). A reasoning model would spend that budget thinking, so the client switches reasoning off in whatever way the endpoint expects: `reasoning: {enabled: false}` on OpenRouter, `thinking: {type: "disabled"}` on DeepSeek's API, `reasoning_effort: "none"` on Ollama Cloud. It picks the endpoint by host, or by the model id's `openrouter/`, `deepseek/` or `ollama-cloud/` prefix behind a gateway. `llm.extraBody` merges over those defaults, and a `null` value removes one.
+- **An optional cheaper first pass for chat models:** set `llm.triageModel` to a small or local model. Its allow is final; a deny, an unreadable reply or an error hands the same prompt to `llm.model`. Allows are most real traffic, so the main model mostly sees the commands that deserve it.
+- **Any change to the prompt or to Jev's questions re-runs the certification** (`bun bench/run.ts`). A change that scores worse than the current one does not ship.
 
 ### Session attribution
 
@@ -137,9 +141,7 @@ bun run build:binary # optional: compiles standalone native binary
 ## Harness Integrations
 
 ### 1. Google Antigravity (`agy`)
-Antigravity supports lifecycle hooks via `hooks.json`. To enable auto-classifier:
-
-Add the hook to your workspace `.agents/hooks.json` or global `~/.gemini/config/hooks.json`:
+Put the hook in agy's user-scope `~/.gemini/config/hooks.json`, so every agy session on the machine is gated. A project's `.agents/hooks.json` takes the same block and gates only that project.
 
 ```json
 {
@@ -150,7 +152,7 @@ Add the hook to your workspace `.agents/hooks.json` or global `~/.gemini/config/
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/construct-auto-classifier/dist/auto-classifier agy",
+            "command": "node /path/to/construct-auto-classifier/bin/auto-classifier.js agy",
             "timeout": 20
           }
         ]
@@ -160,10 +162,17 @@ Add the hook to your workspace `.agents/hooks.json` or global `~/.gemini/config/
 }
 ```
 
-When Antigravity runs `run_command`:
-- Safe commands are allowed transparently.
-- Denied commands instruct the agent to explain before retrying.
-- The 3rd denial escalates via `force_ask` to present the interactive confirmation dialog.
+agy's own approval setting decides how an escalation reaches you. A hook can block a command but cannot skip agy's prompt, so pick one of:
+
+- **`"toolPermission": "always-proceed"`** in `~/.gemini/antigravity-cli/settings.json` (recommended). Commands the gate allows run without a prompt. agy would approve an escalation's prompt by itself, so the gate blocks the command instead and tells the agent to stop and ask you. If you agree, run it yourself.
+- **`"toolPermission": "request-review"`**. agy asks you before every command, including the ones the gate allows. The gate's denials never reach you, and an escalation arrives as agy's prompt with the gate's finding as the reason.
+
+`--dangerously-skip-permissions` behaves like `always-proceed` here: the gate notices either one and blocks an escalation rather than let agy approve it.
+
+When agy runs `run_command`:
+- Safe commands run without a prompt.
+- A denied command comes back to the agent with the reason. It may explain why the concern doesn't apply and try once more, and it is told that the retry needs your approval and stays blocked if nobody is there to give it.
+- The same command again escalates (`policy.consecutiveThreshold`, default 2): blocked with a request to ask you under `always-proceed`, or a prompt with the finding under `request-review`.
 
 ### 2. OpenCode
 Add the compiled plugin to your OpenCode configuration in `~/.config/opencode/plugins/`:
@@ -206,7 +215,7 @@ Example configuration:
   },
   "policy": {
     "denyMode": "both", // "both", "auto-retry", or "ask-user"
-    "consecutiveThreshold": 3,
+    "consecutiveThreshold": 2,
     "slidingWindowMs": 300000,
     "instructAgentOnDenial": true,
     // A script byte-identical to its repo's remote default branch is allowed without the model
@@ -343,12 +352,10 @@ Unit tests cover:
 - State management, atomic disk operations, sliding windows, and anti-interleaving logic.
 - JSON response boundary extraction and fail-closed parser resilience.
 
+<sub><i>Forged on construct/famelos</i></sub>
+
 ---
 
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) for details.
-
----
-
-<sub><i>Forged on construct/famelos</i></sub>

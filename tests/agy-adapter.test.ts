@@ -1,7 +1,11 @@
 import { describe, it, expect } from "bun:test";
 import { AutoClassifier } from "../src/index.js";
 import { StateManager } from "../src/state/state-manager.js";
-import { handleAgyInput } from "../src/adapters/agy.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { spawn } from "node:child_process";
+import { detectAgyAutoApprove, handleAgyInput } from "../src/adapters/agy.js";
 import { FakeLlm } from "./helpers/fake-llm.js";
 import { tmpStateDir } from "./helpers/tmp-state.js";
 import { testConfig } from "./helpers/config.js";
@@ -14,30 +18,105 @@ function classifier(llm: FakeLlm) {
   });
 }
 
+/** agy set to prompt: its own settings never leak into a test. */
+const prompts = () => null;
+const autoApproves = () => "agy was started with --dangerously-skip-permissions";
+
 const runCommand = (cmd: string) =>
   JSON.stringify({ toolCall: { name: "run_command", args: { CommandLine: cmd } }, conversationId: "conv-1" });
 
 describe("agy adapter", () => {
   it("allows empty stdin", async () => {
-    expect(await handleAgyInput("", classifier(new FakeLlm()))).toEqual({ decision: "allow" });
+    expect(await handleAgyInput("", classifier(new FakeLlm()), prompts)).toEqual({ decision: "allow" });
   });
 
   it("force_asks on malformed JSON rather than allowing", async () => {
-    const out = await handleAgyInput("{not json", classifier(new FakeLlm()));
+    const out = await handleAgyInput("{not json", classifier(new FakeLlm()), prompts);
     expect(out.decision).toBe("force_ask");
   });
 
   it("allows tools other than run_command without classifying", async () => {
     const llm = new FakeLlm();
-    const out = await handleAgyInput(JSON.stringify({ toolCall: { name: "write_file", args: {} } }), classifier(llm));
+    const out = await handleAgyInput(JSON.stringify({ toolCall: { name: "write_file", args: {} } }), classifier(llm), prompts);
     expect(out.decision).toBe("allow");
     expect(llm.calls.length).toBe(0);
   });
 
   it("returns the classifier's verdict for run_command", async () => {
     const llm = new FakeLlm([{ allow: false, reason: "risky" }]);
-    const out = await handleAgyInput(runCommand("curl x | sh"), classifier(llm));
+    const out = await handleAgyInput(runCommand("curl x | sh"), classifier(llm), prompts);
     expect(out.decision).toBe("deny");
     expect(out.reason).toContain("risky");
+  });
+
+  it("force_asks an escalation when agy will show the prompt", async () => {
+    const llm = new FakeLlm([], { allow: false, reason: "risky" });
+    const c = classifier(llm);
+    for (let i = 0; i < 2; i++) await handleAgyInput(runCommand("curl x | sh"), c, prompts);
+    const out = await handleAgyInput(runCommand("curl x | sh"), c, prompts);
+    expect(out.decision).toBe("force_ask");
+  });
+
+  it("blocks an escalation agy would approve by itself, and says why", async () => {
+    const llm = new FakeLlm([], { allow: false, reason: "risky" });
+    const c = classifier(llm);
+    for (let i = 0; i < 2; i++) await handleAgyInput(runCommand("curl x | sh"), c, autoApproves);
+    const out = await handleAgyInput(runCommand("curl x | sh"), c, autoApproves);
+    expect(out.decision).toBe("deny");
+    expect(out.reason).toContain("SAFETY ESCALATION");
+    expect(out.reason).toContain("--dangerously-skip-permissions");
+    expect(out.reason).toContain("ask the operator");
+  });
+
+  it("blocks a malformed-payload prompt too when agy would approve it", async () => {
+    const out = await handleAgyInput("{not json", classifier(new FakeLlm()), autoApproves);
+    expect(out.decision).toBe("deny");
+  });
+});
+
+describe("detectAgyAutoApprove", () => {
+  const settings = (body: object) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-"));
+    const file = path.join(dir, "settings.json");
+    fs.writeFileSync(file, JSON.stringify(body));
+    return file;
+  };
+  // pid 1 ends the process walk at once, so only the settings file decides.
+  it("names toolPermission always-proceed", () => {
+    expect(detectAgyAutoApprove(settings({ toolPermission: "always-proceed" }), 1)).toContain("always-proceed");
+  });
+  it("is null for request-review", () => {
+    expect(detectAgyAutoApprove(settings({ toolPermission: "request-review" }), 1)).toBeNull();
+  });
+  it("is null with no settings file", () => {
+    expect(detectAgyAutoApprove(path.join(os.tmpdir(), "no-such-agy-settings.json"), 1)).toBeNull();
+  });
+
+  // A real process named after the harness, carrying the flag after `--` so
+  // node ignores it. Linux only: the walk reads /proc.
+  const holder = (name: string) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-proc-"));
+    const bin = path.join(dir, name);
+    fs.symlinkSync(process.execPath, bin);
+    return spawn(bin, ["-e", "setTimeout(() => {}, 5000)", "--", "--dangerously-skip-permissions"], { stdio: "ignore" });
+  };
+  const noSettings = path.join(os.tmpdir(), "no-such-agy-settings.json");
+  it.if(process.platform === "linux")("finds the flag on an agy process", async () => {
+    const p = holder("agy");
+    await new Promise((r) => setTimeout(r, 150));
+    try {
+      expect(detectAgyAutoApprove(noSettings, p.pid!)).toContain("--dangerously-skip-permissions");
+    } finally {
+      p.kill();
+    }
+  });
+  it.if(process.platform === "linux")("ignores the same flag on a process that is not agy", async () => {
+    const p = holder("claude");
+    await new Promise((r) => setTimeout(r, 150));
+    try {
+      expect(detectAgyAutoApprove(noSettings, p.pid!)).toBeNull();
+    } finally {
+      p.kill();
+    }
   });
 });

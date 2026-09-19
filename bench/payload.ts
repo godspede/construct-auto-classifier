@@ -130,9 +130,8 @@ export function beforeHookOutput(command: string, cwd?: string): { args: { comma
  *
  * `shape` picks which of the two places opencode has shipped `callID` under
  * `properties` -- the adapter reads `props.callID || props.tool?.callID`, and
- * `opencode-adapter.test.ts`'s own `asked()` helper (this repo's existing
- * template for driving the real adapter) defaults to the nested one, so this
- * does too.
+ * `opencode-adapter.test.ts`'s own `asked()` helper defaults to the nested
+ * one, so this does too.
  */
 export function permissionAskedEvent(
   id: CaseIdentity,
