@@ -73,7 +73,7 @@ export const defaultGit: GitRunner = (args, cwd) => {
 const SCRIPT_RUNNERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "python", "python2", "python3", "node", "bun", "deno", "perl", "ruby", "php", "lua", "source", "."]);
 const SCRIPT_RUNNER_FILE_FLAGS: Record<string, string> = { pwsh: "-File", powershell: "-File" };
 /**
- * Verbs a script's output may be piped into with the line still recognised as
+ * Verbs a script's output may be piped into with the line still recognized as
  * a script run, so the model is shown the script's content. Recognition only:
  * a pipe of any kind makes the line not `plain`, so it is never allowed for
  * being landed. `tee` writes files, so it is not one.

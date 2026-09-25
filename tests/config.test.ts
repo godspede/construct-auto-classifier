@@ -41,10 +41,10 @@ function writeFile(body: string): string {
 }
 
 describe("loadConfig defaults", () => {
-  it("defaults to DeepSeek V4.1 Flash on OpenRouter, with no fallback", () => {
+  it("defaults to deepseek-flash on DeepSeek's API, with no fallback", () => {
     const c = load("{}");
-    expect(c.llm.baseUrl).toBe("https://openrouter.ai/api/v1");
-    expect(c.llm.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(c.llm.baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(c.llm.model).toBe("deepseek-flash");
     expect(c.llm.fallbackModel).toBeUndefined();
     expect(c.llm.fallbackModels).toEqual([]);
     expect(c.llm.triageModel).toBeUndefined();

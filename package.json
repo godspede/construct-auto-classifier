@@ -44,13 +44,16 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "keywords": [
+    "ai",
     "ai-safety",
     "coding-agents",
     "guardrails",
+    "safety",
     "security",
     "shell",
     "command-classification",
     "llm",
+    "classifier",
     "opencode",
     "antigravity",
     "agy",

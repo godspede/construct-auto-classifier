@@ -289,7 +289,7 @@ export class AutoClassifier {
   }
 
   /**
-   * The shared tail of every file-tool judgement that reaches the model: a
+   * The shared tail of every file-tool judgment that reaches the model: a
    * retry of a still-denied key skips straight to `handleDenial`, an
    * identical excerpt inside the sliding window is remembered, and
    * everything else is one bounded, truncation-guarded classification call.

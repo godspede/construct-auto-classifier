@@ -338,12 +338,12 @@ export function loadConfig(explicitPath?: string, opts: { overlay?: boolean } = 
     process.env.AUTO_CLASSIFIER_BASE_URL ||
     process.env.OPENAI_BASE_URL ||
     fileConfig.llm?.baseUrl ||
-    "https://openrouter.ai/api/v1";
+    "https://api.deepseek.com/v1";
 
   const model =
     process.env.AUTO_CLASSIFIER_MODEL ||
     fileConfig.llm?.model ||
-    "deepseek/deepseek-v4.1-flash";
+    "deepseek-flash";
 
   const fallbackModel =
     process.env.AUTO_CLASSIFIER_FALLBACK_MODEL ||
@@ -351,7 +351,7 @@ export function loadConfig(explicitPath?: string, opts: { overlay?: boolean } = 
     undefined;
 
   // Further fallback tiers, tried in order after `fallbackModel`. Unset by
-  // default -- today's single-fallback behaviour is unchanged until a config
+  // default -- today's single-fallback behavior is unchanged until a config
   // or the env var opts into a longer chain.
   const fallbackModelsRaw =
     process.env.AUTO_CLASSIFIER_FALLBACK_MODELS ??

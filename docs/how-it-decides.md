@@ -1,6 +1,6 @@
 # How it decides, in full
 
-The [README](../README.md#how-it-decides) gives each stage of the gate in a few sentences. This page has the exact shapes behind three of them: what the fast deny refuses, what the fast allow vouches for, and which script runs are trusted without the model. It describes the code in this repository; where the two disagree, the code is right and this page is a bug.
+The [README](../README.md#2-multi-tier-evaluation-1ms-fast-path) gives each stage of the gate in a few sentences. This page has the exact shapes behind three of them: what the fast deny refuses, what the fast allow vouches for, and which script runs are trusted without the model.
 
 ## Fast deny
 
@@ -19,7 +19,7 @@ The gate's files are:
 - its session state;
 - its code: the package it runs from (the directory whose `package.json` names `construct-auto-classifier`: `dist/`, `bin/`, `src/`, …), or the single file when it runs as a bundle copied on its own or as a compiled binary.
 
-A relative path is placed against the command's directory and any `cd` on the line. A symlink to one of its files counts as that file, and so does a hard link to a file in its config directory, a configured config file or its plugin drop-in. This check does not read the config, so an agent cannot edit it away, and the config that holds `rules.fastDeny` is one of the files it protects. A change made any other way (an interpreter's inline code, a build script) is not recognised here and goes through the later stages like any other command.
+A relative path is placed against the command's directory and any `cd` on the line. A symlink to one of its files counts as that file, and so does a hard link to a file in its config directory, a configured config file or its plugin drop-in. This check does not read the config, so an agent cannot edit it away, and the config that holds `rules.fastDeny` is one of the files it protects. A change made any other way (an interpreter's inline code, a build script) is not recognized here and goes through the later stages like any other command.
 
 Then the `rules.fastDeny` patterns (`mkfs`, `dd` onto a disk, a fork bomb) are tested against the whole line and against every simple command in it.
 
@@ -31,7 +31,7 @@ Both checks, and the [upload check](../README.md#uploads-go-only-where-you-sanct
 
 Fast allow does not see through any of these: a rule vouches only for the text it names.
 
-A command refused here escalates on a retry like any other denial, so that you can overrule the rule at your harness's permission prompt. Where nobody can be asked (agy approving its own prompts, `policy.headless`), that escalation is refused, whatever `agy.alwaysProceedEscalations` says, and so is every other escalation no model judged: an [unsanctioned upload](../README.md#uploads-go-only-where-you-sanctioned), the [file tools'](../README.md#file-tools) refusals and escalated writes, a script cut short before the model saw it whole, and a repeated attempt while no model could be reached. Only an escalation the model actually raised follows that setting. On OpenCode, each of these also stands when a pattern under the tool's permission lets calls through unasked, and a rule's refusal also stands until OpenCode's config reaches the plugin.
+A command refused here escalates on a retry like any other denial, so that you can overrule the rule at your harness's permission prompt; where nobody can be asked, it stays refused ([Self-Defense Protocol](../README.md#3-actionable-self-defense-protocol-denymode-both)).
 
 ## Fast allow
 
@@ -62,7 +62,7 @@ As a backstop, a line holding syntax the gate does not fully model is never allo
 - `$( )`, `$(( ))`, backticks or process substitution;
 - a compound command: `if`, `for`, `while`, `case`, `select`, `[[ ]]`, `!` or `time -p`;
 - `function`, `coproc`, `alias`, `set`, `shopt`, `hash`, `enable` or `trap`;
-- quoting it cannot follow: `$"…"`, quotes nested in `${…}`, an unterminated quote, or an escape bash honours and PowerShell or cmd do not, such as `\"` inside double quotes, `\;` or a line continuation;
+- quoting it cannot follow: `$"…"`, quotes nested in `${…}`, an unterminated quote, or an escape bash honors and PowerShell or cmd do not, such as `\"` inside double quotes, `\;` or a line continuation;
 - a control character other than tab, newline and a CR ending a line;
 - an invisible or curly-quote character anywhere, or any other non-ASCII character outside quotes;
 - a here-document;
@@ -88,4 +88,4 @@ Arguments to a reviewed script are passed through: the script decides what they 
 
 This is `policy.trustLandedScripts`, default on. It trusts whoever controls that remote, so turn it off for repositories you do not control. It also trusts the local copy of the remote's branch: the comparison is with the remote-tracking ref (such as `origin/main`), not the remote itself, so an agent that can repoint a remote or move that ref (`git remote set-url`, a fetch with a refspec, `git update-ref`) can make its own script count as landed.
 
-Any other script's content goes to the model, with one line saying whether it is modified, unpushed, untracked or outside a repository. Files the command reads (`--body-file`, `-f`, a known extension) are attached as data. A file that is one of the gate's own (its config directory, a configured config file, or a link to one) or credential-looking (the list in [Fast allow](#fast-allow)) is never read: the model is told the command names it and that its contents were withheld. A script being run that is such a file counts as cut short, so the model's allow of it is not trusted ([How it decides](../README.md#how-it-decides), step 7).
+Any other script's content goes to the model, with one line saying whether it is modified, unpushed, untracked or outside a repository. Files the command reads (`--body-file`, `-f`, a known extension) are attached as data. A file that is one of the gate's own (its config directory, a configured config file, or a link to one) or credential-looking (the list in [Fast allow](#fast-allow)) is never read: the model is told the command names it and that its contents were withheld. A script being run that is such a file counts as cut short, so the model's allow of it is not trusted ([Scripts](../README.md#scripts-are-judged-on-where-they-came-from-not-on-their-name)).

@@ -35,7 +35,7 @@ const PROTECTED_PATH_PATTERNS: RegExp[] = [
   // the installed plugin drop-in OpenCode loads on start
   /(?:^|[\/\\])\.config[\/\\]opencode[\/\\]plugins[\/\\]auto-classifier\.js$/i,
   // per-session denial counters and remembered verdicts: a forged "allow"
-  // here would be honoured as a cache hit
+  // here would be honored as a cache hit
   /(?:^|[\/\\])\.cache[\/\\]auto-classifier(?:[\/\\]|$)/i,
   /(?:^|[\/\\])auto-classifier[\/\\]sessions(?:[\/\\]|$)/i,
 ];

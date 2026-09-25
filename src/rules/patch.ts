@@ -17,8 +17,8 @@
  *     `/dev/null` on either side means an add or a delete and names no path.
  *
  * This does not validate hunks or otherwise verify the patch applies -- it
- * only pulls out target paths, deliberately permissively (recognising
- * either shape, and never erroring on a line it does not recognise), because
+ * only pulls out target paths, deliberately permissively (recognizing
+ * either shape, and never erroring on a line it does not recognize), because
  * the caller's job is to run every target through the same read/write
  * ladder a `read`/`write`/`edit` call gets, not to be the patch applier.
  *

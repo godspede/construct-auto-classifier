@@ -249,7 +249,7 @@ export interface DecisionOutcome {
    */
   ruleRefusal?: boolean;
   /**
-   * Set when the gate, not a model's judgement, raised this escalation: a
+   * Set when the gate, not a model's judgment, raised this escalation: a
    * rule's refusal (`ruleRefusal`), a file write the file-tool ladder sends
    * to a person, a model's allow of a file it was not shown whole, or a model
    * that could not be reached. It exists only for a person to decide, so an

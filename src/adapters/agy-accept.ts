@@ -170,7 +170,7 @@ export function promptMatches(prompt: PermissionPrompt | null, allowed: string):
  * whitespace, or, where agy cut a long command short (an ellipsis, a
  * "N lines hidden" marker), a prefix of it at least 20 characters long.
  * Shared by the accept watcher and the escalation-timeout watcher, so both
- * recognise the same prompts.
+ * recognize the same prompts.
  */
 export function shownCommandMatches(shown: string, command: string): boolean {
   const sAllowed = squash(command);

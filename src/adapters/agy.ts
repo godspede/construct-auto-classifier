@@ -36,7 +36,7 @@ export function procReader(pid: number): ProcessEntry | null {
   }
 }
 
-/** Split a Windows command line into arguments, honouring double quotes. */
+/** Split a Windows command line into arguments, honoring double quotes. */
 export function splitCommandLine(line: string): string[] {
   return (line.match(/"[^"]*"|\S+/g) ?? []).map((a) => a.replace(/^"|"$/g, ""));
 }

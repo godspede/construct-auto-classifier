@@ -314,7 +314,7 @@ const CROSS_SHELL_ESCAPED = new Set([";", "&", "|", "<", ">", "(", ")", "{", "}"
  * - reserved words and state-changing builtins in command position
  *   (`UNMODELLED_COMMAND_WORDS`), and `time` given options;
  * - quoting the tracker cannot follow: `$"..."`, quotes or expansions nested
- *   in `${...}`, an unterminated quote, and the escapes bash honours but
+ *   in `${...}`, an unterminated quote, and the escapes bash honors but
  *   PowerShell or cmd do not (`\"` in double quotes, `\'` in `$'...'`, a
  *   backslash before an operator, a quote or a newline, cmd's `^"`), and a
  *   PowerShell here-string;

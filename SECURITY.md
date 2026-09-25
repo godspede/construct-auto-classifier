@@ -12,7 +12,7 @@ A bypass is a call that does one of the [harms the gate names](README.md#what-co
 - a remembered verdict answering for a call the model never saw;
 - the contents of a file the gate says it withholds (its own files, a credential-looking path) reaching the model provider.
 
-A harmful call the model was asked about and allowed is a model-quality problem rather than a bypass; open an ordinary issue with the case (and no secrets). If the gate itself misled the model, for example with a wrong fact about where a command runs, report it privately as above. The limits listed in [Security model and limits](README.md#security-model-and-limits) are known; a concrete way to exploit one is still worth reporting.
+A harmful call the model was asked about and allowed is a model-quality problem rather than a bypass; open an ordinary issue with the case (and no secrets). If the gate itself misled the model, for example with a wrong fact about where a command runs, report it privately as above. The limits listed in [What the gate does not see](README.md#what-the-gate-does-not-see) are known; a concrete way to exploit one is still worth reporting.
 
 ## What to include
 

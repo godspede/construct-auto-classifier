@@ -100,7 +100,7 @@ export function withBannerComment(banner: string, command: string): string {
  *
  * OpenCode keeps the command we rewrote, so the agent's next attempt at it
  * arrives carrying our own banner: a different string than the one denied, so
- * the gate would not recognise a retry and the banner's text would sit inside
+ * the gate would not recognize a retry and the banner's text would sit inside
  * the command being judged. Only a line that equals a banner this process
  * issued (`issued`) is removed, a whole leading line and nothing looser. A
  * comment an agent typed in the banner's likeness, or an issued banner with a
@@ -193,7 +193,7 @@ export function createOpenCodePlugin(customClassifier?: AutoClassifier) {
   const decisions = new Map<string, DecisionOutcome>();
   // Every banner this process has written, so the ones handed back to us can be
   // told from a lookalike an agent typed. In memory: after a restart an old
-  // banner is unrecognised and judged as written, which is the safe direction.
+  // banner is unrecognized and judged as written, which is the safe direction.
   const issuedBanners = new Set<string>();
   // OpenCode's resolved config, from its `config` hook; undefined until it arrives.
   let openCodeConfig: unknown;
@@ -292,7 +292,7 @@ export function createOpenCodePlugin(customClassifier?: AutoClassifier) {
         }
         // An escalation the gate raised (a rule's refusal, an escalated write, a
         // script cut short, or a model that could not be reached) had no
-        // model's judgement behind it, so it is refused when a pattern under
+        // model's judgment behind it, so it is refused when a pattern under
         // the tool's permission lets calls through unasked. A rule's refusal
         // waits only on a prompt that is sure to show, so it is refused too
         // until OpenCode's config has arrived.

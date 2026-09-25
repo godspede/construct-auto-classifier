@@ -22,9 +22,9 @@ Environment Variables (each overrides the config field named; see the README):
   AUTO_CLASSIFIER_CONFIG              Config file path (default ~/.config/auto-classifier/config.jsonc)
   AUTO_CLASSIFIER_LOCAL_CONFIG        Machine-local overlay path (default ~/.config/auto-classifier/local.jsonc)
   AUTO_CLASSIFIER_PROVIDER            llm.provider: "jev" (TypeSafe's Jev, the default) | "openai" (a chat model)
-  AUTO_CLASSIFIER_BASE_URL            llm.baseUrl, an OpenAI-compatible API root (or OPENAI_BASE_URL; default OpenRouter)
+  AUTO_CLASSIFIER_BASE_URL            llm.baseUrl, an OpenAI-compatible API root (or OPENAI_BASE_URL; default DeepSeek)
   AUTO_CLASSIFIER_API_KEY             llm.apiKey (or OPENAI_API_KEY)
-  AUTO_CLASSIFIER_MODEL               llm.model (default deepseek/deepseek-v4.1-flash)
+  AUTO_CLASSIFIER_MODEL               llm.model (default deepseek-flash)
   AUTO_CLASSIFIER_FALLBACK_MODEL      llm.fallbackModel, tried when the primary fails (default none)
   AUTO_CLASSIFIER_FALLBACK_MODELS     llm.fallbackModels, comma-separated, tried after it
   AUTO_CLASSIFIER_TRIAGE_MODEL        llm.triageModel, a cheaper model asked first; its allow is final

@@ -18,15 +18,16 @@
     "provider": "jev",
 
     // The root of an OpenAI-compatible completions API, for example:
+    //   - DeepSeek: "https://api.deepseek.com/v1"
     //   - Local Ollama: "http://127.0.0.1:11434/v1"
     //   - Local vLLM: "http://127.0.0.1:8000/v1"
     //   - OpenRouter: "https://openrouter.ai/api/v1"
     //   - Groq: "https://api.groq.com/openai/v1"
     //   - OpenAI: "https://api.openai.com/v1"
-    "baseUrl": "https://openrouter.ai/api/v1",
+    "baseUrl": "https://api.deepseek.com/v1",
 
     // The API key: a literal, or "env:NAME" to read it from the environment
-    "apiKey": "env:OPENROUTER_API_KEY",
+    "apiKey": "env:DEEPSEEK_API_KEY",
 
     // Or read the key from a file under your home directory, used only when "apiKey" is
     // absent. An unreadable file is logged, and the call then fails closed.
@@ -34,13 +35,15 @@
 
     // The model asked about each command the rules do not settle. Reasoning models are fine: the client switches their
     // hidden reasoning off for the endpoint it talks to, so the reply is not truncated.
-    "model": "deepseek/deepseek-v4.1-flash",
+    "model": "deepseek-flash",
 
-    // Optional: a model asked when the primary fails, times out or replies with no parseable verdict
-    // "fallbackModel": "z-ai/glm-5.3-flash",
+    // Optional: a model asked when the primary fails, times out or replies with no parseable verdict.
+    // Every model in the chain is asked at the same baseUrl, so a fallback from another provider
+    // needs a gateway that routes by model id (e.g. "openrouter/deepseek/deepseek-v4.1-flash").
+    // "fallbackModel": "<another model id at the same endpoint>",
 
     // Optional: further fallback models, tried in order after "fallbackModel"
-    // "fallbackModels": ["openai/gpt-oss-120b"],
+    // "fallbackModels": ["<another model id at the same endpoint>"],
 
     // Optional: a cheaper model asked first; its allow is final, its deny is re-asked of "model"
     // "triageModel": "<a smaller, cheaper model id>",
@@ -169,10 +172,7 @@
   // "run" lets it run as you chose, logged and recorded with telemetry source
   // "always-proceed"; "stop" denies it, tells the agent to stop and ask you,
   // and records source "no-prompt". Any other value is treated as "stop" and
-  // logged. Neither applies to an escalation no model judged (a refusal of
-  // the gate's own files, rules.fastDeny or an unsanctioned upload, an
-  // escalated file write, a script cut short before the model saw it whole, a
-  // retry while no model could be reached): with nobody to decide it, it is
-  // refused, recorded as "gate-kept".
+  // logged. An escalation no model judged is refused either way, recorded as
+  // "gate-kept" (README, "Actionable Self-Defense Protocol").
   "agy": { "autoAcceptInTmux": false, "alwaysProceedEscalations": "run" }
 }
