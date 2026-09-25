@@ -28,18 +28,28 @@ describe("combine", () => {
   });
 
   test("one risk question over threshold overrides an allow verdict", () => {
-    const r = combine(reply("allow", 0.95, 0.9, { secrets: 0.82 }), {});
+    const r = combine(reply("allow", 0.95, 0.9, { secret_in_output: 0.82 }), {});
     expect(r.allow).toBe(false);
-    expect(r.reason).toContain("secrets 0.82");
+    expect(r.reason).toContain("secret in output 0.82");
   });
 
-  test("an unsure allow is not an unattended allow", () => {
-    expect(combine(reply("allow", 0.6, 0.3), {}).allow).toBe(false);
+  test("an unsure allow is not an unattended allow while any risk is above the quiet ceiling", () => {
+    expect(combine(reply("allow", 0.6, 0.2, { lockout: 0.3 }), {}).allow).toBe(false);
+  });
+
+  test("with every risk quiet, a plainer majority for allow is enough", () => {
+    expect(combine(reply("allow", 0.6, 0.2), {}).allow).toBe(true);
+    expect(combine(reply("allow", 0.55, 0.1), {}).allow).toBe(false);
+  });
+
+  test("both low-risk numbers are config", () => {
+    expect(combine(reply("allow", 0.6, 0.2), { lowRiskMinAllow: 0.7 }).allow).toBe(false);
+    expect(combine(reply("allow", 0.6, 0.2, { lockout: 0.3 }), { lowRiskCeiling: 0.35 }).allow).toBe(true);
   });
 
   test("a missing risk answer fails closed", () => {
     const res = reply("allow", 1, 1);
-    delete res.answers!.remote_code;
+    delete res.answers!.untrusted_code;
     expect(combine(res, {}).allow).toBe(false);
   });
 
@@ -66,6 +76,20 @@ describe("JevClient", () => {
     const file = (body.state as any).script_file;
     expect(file.provenance).toBe("untracked");
     expect(file.content).not.toContain("abcdefghijklmnop");
+  });
+
+  test("the exfiltration question and the verdict name the sanctioned list, loopback always first", () => {
+    const body = buildRequest("git push origin x", undefined, { sanctionedRemotes: ["github.com/octo-org/"] }) as any;
+    expect(body.questions.exfiltration.instructions).toContain("NOT on the sanctioned list");
+    expect(body.questions.exfiltration.instructions).toContain("loopback (localhost, 127.0.0.1, ::1), github.com/octo-org/");
+    expect(body.questions.verdict.criteria.deny).toContain("github.com/octo-org/");
+    expect((buildRequest("ls", undefined, {}) as any).questions.exfiltration.instructions).toContain("and nothing else");
+  });
+
+  test("uploads the gate verified ride in the state, apart from the command", () => {
+    const body = buildRequest("git push origin x", undefined, {}, 2000, { sanctionedUploads: ["git push sends commits to forge.example.ts.net/o/a.git"] }) as any;
+    expect(body.state.gate_verified_sanctioned_uploads).toEqual(["git push sends commits to forge.example.ts.net/o/a.git"]);
+    expect((buildRequest("ls", undefined, {}) as any).state.gate_verified_sanctioned_uploads).toBeUndefined();
   });
 
   test("a transport failure is a transient deny, never an allow", async () => {

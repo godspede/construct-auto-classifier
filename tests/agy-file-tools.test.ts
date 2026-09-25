@@ -1,3 +1,5 @@
+import path from "node:path";
+import fs from "node:fs";
 import { describe, it, expect } from "bun:test";
 import { AutoClassifier } from "../src/index.js";
 import { StateManager } from "../src/state/state-manager.js";
@@ -7,8 +9,8 @@ import { FakeLlm } from "./helpers/fake-llm.js";
 import { tmpStateDir } from "./helpers/tmp-state.js";
 import { testConfig } from "./helpers/config.js";
 
-function classifier(llm: FakeLlm) {
-  const config = testConfig();
+function classifier(llm: FakeLlm, alwaysProceedEscalations?: "run" | "stop") {
+  const config = { ...testConfig(), agy: { alwaysProceedEscalations } };
   return new AutoClassifier(config, {
     classifier: llm,
     stateManager: new StateManager(config.policy.slidingWindowMs, config.policy.consecutiveThreshold, tmpStateDir()),
@@ -41,7 +43,7 @@ describe("agy adapter: file tools", () => {
   });
   it("escalates a write outside the workspace, with the reason on the prompt and no watcher", async () => {
     const w = watcher();
-    const out = await handleAgyInput(fileCall("write_to_file", "/home/z/elsewhere.txt"), classifier(new FakeLlm()), prompts, w.onAllow);
+    const out = await handleAgyInput(fileCall("write_to_file", "/home/dev/elsewhere.txt"), classifier(new FakeLlm()), prompts, w.onAllow);
     expect(out.decision).toBe("force_ask");
     expect(out.reason).toContain("outside the session's workspace");
     expect(w.started).toEqual([]);
@@ -52,17 +54,26 @@ describe("agy adapter: file tools", () => {
   });
   it("denies a write to the gate's own config", async () => {
     const out = await handleAgyInput(
-      fileCall("write_to_file", "/home/z/.config/auto-classifier/config.jsonc", ["/home/z"]),
+      fileCall("write_to_file", "/home/dev/.config/auto-classifier/config.jsonc", ["/home/dev"]),
       classifier(new FakeLlm()),
       prompts,
       watcher().onAllow
     );
     expect(out.decision).toBe("deny");
   });
-  it("turns an escalated write into a denial when agy would approve it itself", async () => {
-    const out = await handleAgyInput(fileCall("write_to_file", "/home/z/elsewhere.txt"), classifier(new FakeLlm()), autoApproves, watcher().onAllow);
+  it("turns an escalated write into a denial when agy would approve it itself, under alwaysProceedEscalations stop", async () => {
+    const out = await handleAgyInput(fileCall("write_to_file", "/home/dev/elsewhere.txt"), classifier(new FakeLlm(), "stop"), autoApproves, watcher().onAllow);
     expect(out.decision).toBe("deny");
     expect(out.reason).toContain("--dangerously-skip-permissions");
+  });
+  it("refuses an escalated write that agy would approve by itself, since a rule raised it, and records that", async () => {
+    const telemetry = path.join(tmpStateDir(), "t.jsonl");
+    const c = classifier(new FakeLlm());
+    c.getConfig().telemetry = { enabled: true, path: telemetry };
+    const out = await handleAgyInput(fileCall("write_to_file", "/home/dev/elsewhere.txt"), c, autoApproves, watcher().onAllow);
+    expect(out.decision).toBe("deny");
+    const row = JSON.parse(fs.readFileSync(telemetry, "utf-8").trim().split("\n").pop()!);
+    expect(row).toMatchObject({ source: "gate-kept", decision: "deny", file_path: "/home/dev/elsewhere.txt", session: "conv-1" });
   });
   it("still ignores tools that write nothing", async () => {
     const out = await handleAgyInput(
@@ -72,5 +83,26 @@ describe("agy adapter: file tools", () => {
       watcher().onAllow
     );
     expect(out).toEqual({ decision: "allow" });
+  });
+});
+
+describe("agy adapter: file tools write telemetry", () => {
+  it("writes one row per file-tool verdict, naming the stage that decided", async () => {
+    const file = path.join(tmpStateDir(), "t.jsonl");
+    const config = { ...testConfig(), telemetry: { enabled: true, path: file }, agy: {} };
+    const c = new AutoClassifier(config, { classifier: new FakeLlm(), stateManager: new StateManager(300000, 3, tmpStateDir()) });
+    const w = watcher();
+    await handleAgyInput(fileCall("write_to_file", "/work/app/notes.txt"), c, prompts, w.onAllow, () => true);
+    await handleAgyInput(fileCall("write_to_file", "/work/app/.git/hooks/pre-commit"), c, prompts, w.onAllow, () => true);
+    await handleAgyInput(fileCall("replace_file_content", "/etc/hosts"), c, prompts, w.onAllow, () => true);
+    await handleAgyInput(fileCall("write_to_file", "/home/dev/.config/auto-classifier/config.jsonc"), c, prompts, w.onAllow, () => true);
+    const rows = fs.readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(rows.map((r) => [r.tool, r.decision, r.source, r.file_path])).toEqual([
+      ["write_to_file", "allow", "workspace-allow", "/work/app/notes.txt"],
+      ["write_to_file", "force_ask", "sensitive-escalate", "/work/app/.git/hooks/pre-commit"],
+      ["replace_file_content", "force_ask", "outside-escalate", "/etc/hosts"],
+      ["write_to_file", "deny", "protected-deny", "/home/dev/.config/auto-classifier/config.jsonc"],
+    ]);
+    expect(rows[0]).toMatchObject({ type: "classification", session: "conv-1", command: "write_to_file /work/app/notes.txt", model: null });
   });
 });

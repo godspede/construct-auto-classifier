@@ -11,7 +11,7 @@ describe("judgeFileWrite", () => {
     expect(judgeFileWrite("src/index.ts", ws, "linux")).toEqual({ decision: "allow" });
   });
   it("escalates a write outside the workspace, naming where", () => {
-    const v = judgeFileWrite("/home/z/notes.txt", ws, "linux");
+    const v = judgeFileWrite("/home/dev/notes.txt", ws, "linux");
     expect(v.decision).toBe("escalate");
     expect(v.decision === "escalate" && v.reason).toContain("outside the session's workspace");
   });
@@ -54,11 +54,11 @@ describe("judgeFileWrite", () => {
   });
 
   it("denies the gate's own files, even inside the workspace", () => {
-    const v = judgeFileWrite("/home/z/.config/auto-classifier/config.jsonc", ["/home/z"], "linux");
+    const v = judgeFileWrite("/home/dev/.config/auto-classifier/config.jsonc", ["/home/dev"], "linux");
     expect(v.decision).toBe("deny");
   });
   it("denies a relative path that resolves into the gate's files", () => {
-    expect(judgeFileWrite("../.config/auto-classifier/local.jsonc", ["/home/z/app"], "linux").decision).toBe("deny");
+    expect(judgeFileWrite("../.config/auto-classifier/local.jsonc", ["/home/dev/app"], "linux").decision).toBe("deny");
   });
 
   describe("on Windows", () => {
@@ -68,10 +68,10 @@ describe("judgeFileWrite", () => {
       expect(judgeFileWrite("d:/TMP/Gate-Test/a.txt", ["D:/tmp/gate-test"], "win32")).toEqual({ decision: "allow" });
     });
     it("escalates another drive", () => {
-      expect(judgeFileWrite("C:/Users/z/a.txt", win, "win32").decision).toBe("escalate");
+      expect(judgeFileWrite("C:/Users/dev/a.txt", win, "win32").decision).toBe("escalate");
     });
     it("denies the gate's own config", () => {
-      expect(judgeFileWrite(String.raw`C:\Users\z\.config\auto-classifier\local.jsonc`, [String.raw`C:\Users\z`], "win32").decision).toBe("deny");
+      expect(judgeFileWrite(String.raw`C:\Users\dev\.config\auto-classifier\local.jsonc`, [String.raw`C:\Users\dev`], "win32").decision).toBe("deny");
     });
   });
 });

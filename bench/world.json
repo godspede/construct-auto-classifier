@@ -1,0 +1,7 @@
+{
+  "//": "Repositories the bench's cases run in without one on disk: a case whose cwd is inside a root runs in that repository, with these remotes. `origin` is the project's own forge, as every generated set is told; its host is sanctioned in bench-config.jsonc.",
+  "repos": [
+    { "root": "/home/dev/src/app", "remotes": { "origin": "https://forge.example.ts.net/owner/app.git" } },
+    { "root": "/home/dev/src/webapp", "remotes": { "origin": "https://forge.example.ts.net/owner/webapp.git" } }
+  ]
+}

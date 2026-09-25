@@ -2,17 +2,26 @@ import { describe, it, expect } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findScriptInvocation, scriptProvenance } from "../src/context/script-provenance.js";
+import { findScriptInvocation, scriptProvenance, defaultGit } from "../src/context/script-provenance.js";
 import { gitFixture } from "./helpers/git-fixture.js";
 
 describe("findScriptInvocation", () => {
   it("recognises the ways a script gets run", () => {
-    expect(findScriptInvocation("./deploy/publish.sh")).toEqual({ script: "./deploy/publish.sh", cd: undefined });
-    expect(findScriptInvocation("cd /home/dev/web && ./deploy/publish.sh 2>&1 | tail -15")).toEqual({ script: "./deploy/publish.sh", cd: "/home/dev/web" });
-    expect(findScriptInvocation("bash scripts/build.sh --release")).toEqual({ script: "scripts/build.sh", cd: undefined });
-    expect(findScriptInvocation("sudo python3 tools/migrate.py --dry-run")).toEqual({ script: "tools/migrate.py", cd: undefined });
-    expect(findScriptInvocation("pwsh -File deploy/push.ps1")).toEqual({ script: "deploy/push.ps1", cd: undefined });
-    expect(findScriptInvocation("/usr/local/bin/thing")).toEqual({ script: "/usr/local/bin/thing", cd: undefined });
+    expect(findScriptInvocation("./deploy/publish.sh")).toEqual({ script: "./deploy/publish.sh", cd: undefined, plain: true });
+    expect(findScriptInvocation("bash scripts/build.sh --release")).toEqual({ script: "scripts/build.sh", cd: undefined, plain: true });
+    expect(findScriptInvocation("/usr/local/bin/thing")).toEqual({ script: "/usr/local/bin/thing", cd: undefined, plain: true });
+    // Still a script run, so its content is shown, but not the narrow shape
+    // landed-script trust needs: a cd prefix, a pipe, a redirect of any kind,
+    // a privilege wrapper, an interpreter flag or an env assignment.
+    expect(findScriptInvocation("cd /home/dev/web && ./deploy/publish.sh 2>&1 | tail -15")).toEqual({ script: "./deploy/publish.sh", cd: "/home/dev/web", plain: false });
+    expect(findScriptInvocation("sudo python3 tools/migrate.py --dry-run")).toEqual({ script: "tools/migrate.py", cd: undefined, plain: false });
+    expect(findScriptInvocation("pwsh -File deploy/push.ps1")).toEqual({ script: "deploy/push.ps1", cd: undefined, plain: false });
+    expect(findScriptInvocation("LD_PRELOAD=/tmp/x.so ./deploy/publish.sh")?.plain).toBe(false);
+    expect(findScriptInvocation("./deploy/publish.sh > ~/.bashrc")?.plain).toBe(false);
+    expect(findScriptInvocation("./deploy/publish.sh 2>&1 | tail -3")?.plain).toBe(false);
+    expect(findScriptInvocation("./deploy/publish.sh > /dev/null")?.plain).toBe(false);
+    // tee writes the files it names: not an output shaper, so not a script run.
+    expect(findScriptInvocation("./deploy/publish.sh | tee -a ~/.bashrc")).toBeNull();
   });
 
   it("is not fooled by inline code, substitution, or a second command", () => {
@@ -114,9 +123,11 @@ describe("an interpreter named by path is an interpreter, not a script", () => {
     expect(findScriptInvocation("/usr/bin/python3.12 -c 'print(1)'")).toBeNull();
   });
 
-  it("still finds the script an interpreter named by path runs", () => {
-    expect(findScriptInvocation("/srv/app/.venv/bin/python tools/gen.py --out x")).toEqual({ script: "tools/gen.py", cd: undefined });
-    expect(findScriptInvocation("/usr/local/bin/node scripts/build.js")).toEqual({ script: "scripts/build.js", cd: undefined });
+  it("still finds the script an interpreter named by path runs, but never trusts the run", () => {
+    // The interpreter's own bytes are unreviewed, so the line is shown to the
+    // model with the script's content rather than allowed for being landed.
+    expect(findScriptInvocation("/srv/app/.venv/bin/python tools/gen.py --out x")).toEqual({ script: "tools/gen.py", cd: undefined, plain: false });
+    expect(findScriptInvocation("/usr/local/bin/node scripts/build.js")).toEqual({ script: "scripts/build.js", cd: undefined, plain: false });
   });
 
   it("gives no provenance for a compiled executable, so no truncated 'script' reaches the model", () => {
@@ -126,3 +137,23 @@ describe("an interpreter named by path is an interpreter, not a script", () => {
     expect(scriptProvenance(`${bin} --version`, dir)).toBeNull();
   });
 });
+
+describe("defaultGit", () => {
+  it("resolves the repository from cwd, ignoring a GIT_DIR the host leaked into the environment", () => {
+    const fx = gitFixture();
+    const saved = process.env.GIT_DIR;
+    // A host process's own git repo (OpenCode's file-snapshot repo is one): valid,
+    // but it has no `origin` remote, so an inherited GIT_DIR answers the wrong
+    // question and the gate reads a sanctioned push as unsanctioned.
+    process.env.GIT_DIR = path.join(fx.root, "origin.git");
+    try {
+      const r = defaultGit(["remote", "get-url", "--push", "origin"], fx.work);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("origin.git");
+    } finally {
+      if (saved === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved;
+    }
+  });
+});
+

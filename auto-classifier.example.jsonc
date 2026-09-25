@@ -1,13 +1,23 @@
 {
-  // Any OpenAI-compatible provider
+  // Where uploads may go: an exact host, a "*.suffix" wildcard, a host plus
+  // path prefix ("github.com/octo-org/"), or an IPv4 range ("100.64.0.0/10").
+  // Loopback is always sanctioned. Empty means loopback only: an upload
+  // anywhere else (curl -T/-F/-d, scp, rsync, git push, gh writes, ...) is
+  // stopped before the model.
+  "sanctionedRemotes": [],
+  // Optional: a JSON file whose patterns are merged with the array above (an
+  // array of strings, or {"entries": [{"pattern": "..."}]}). An unreadable
+  // file adds nothing and is logged.
+  // "sanctionedRemotesFile": "/etc/example/sanctioned-remotes.json",
+
+  // The model that decides what the rules cannot
   "llm": {
     // Which model decides: "jev" (the default) asks TypeSafe's Jev, configured
     // in the "jev" block below; "openai" asks a chat model over any
     // OpenAI-compatible endpoint, configured here.
     "provider": "jev",
 
-    // URL pointing to your OpenAI-compatible completions endpoint.
-    // Examples:
+    // The root of an OpenAI-compatible completions API, for example:
     //   - Local Ollama: "http://127.0.0.1:11434/v1"
     //   - Local vLLM: "http://127.0.0.1:8000/v1"
     //   - OpenRouter: "https://openrouter.ai/api/v1"
@@ -15,105 +25,154 @@
     //   - OpenAI: "https://api.openai.com/v1"
     "baseUrl": "https://openrouter.ai/api/v1",
 
-    // API Key. Can be literal or load from environment: "env:OPENROUTER_API_KEY"
+    // The API key: a literal, or "env:NAME" to read it from the environment
     "apiKey": "env:OPENROUTER_API_KEY",
 
-    // Primary model to evaluate commands. Reasoning models are fine: the client switches their
+    // Or read the key from a file under your home directory, used only when "apiKey" is
+    // absent. An unreadable file is logged, and the call then fails closed.
+    // "apiKeyFile": "~/.config/auto-classifier/api-key",
+
+    // The model asked about each command the rules do not settle. Reasoning models are fine: the client switches their
     // hidden reasoning off for the endpoint it talks to, so the reply is not truncated.
     "model": "deepseek/deepseek-v4.1-flash",
 
-    // Optional fallback model if the primary model fails or times out
+    // Optional: a model asked when the primary fails, times out or replies with no parseable verdict
     // "fallbackModel": "z-ai/glm-5.3-flash",
 
-    // Optional cheaper model asked first; its allow is final, its deny is re-asked of "model"
+    // Optional: further fallback models, tried in order after "fallbackModel"
+    // "fallbackModels": ["openai/gpt-oss-120b"],
+
+    // Optional: a cheaper model asked first; its allow is final, its deny is re-asked of "model"
     // "triageModel": "<a smaller, cheaper model id>",
 
-    // Completion budget for the one-line JSON reply
+    // The completion budget for the one-line JSON reply
     "maxTokens": 120,
 
-    // Extra request fields merged over the per-route reasoning-off defaults; a null value removes a default
+    // Extra request fields, merged over the per-route reasoning-off defaults; a null value removes a default
     // "extraBody": { "reasoning": null },
 
-    // Request timeout in milliseconds
+    // One request's timeout in milliseconds
     "timeoutMs": 15000,
 
-    // Cap on script content shown to the model when a script is not landed on its repo's default branch
+    // The whole chain's deadline (triage, primary and every fallback), in milliseconds. Each request
+    // gets only what is left; once it is spent the verdict fails closed as an unreachable model.
+    // Keep it under your harness's hook timeout (agy's is 20 s in the README's setup).
+    "totalTimeoutMs": 18000,
+
+    // How much of a script or file the model is shown. A chat model's prompt shows at most 8000
+    // characters whatever this says; anything past what the model sees counts as cut short, so
+    // its allow is not trusted.
     "maxFileChars": 2000
+
+    // Instructions added to the chat model's prompt only; defaults to policy.instructionsAppend
+    // "instructionsAppend": "..."
   },
 
-  // Security & Escalation Policy
+  // Escalation policy
   "policy": {
-    // "both": Auto-retries initial denials with feedback, then escalates to interactive prompt on consecutive denials.
-    // "auto-retry": Never prompts user interactively; denies with explanation.
-    // "ask-user": Always prompts user interactively on any denial.
+    // "both": a first denial goes back to the agent with the reason, and a repeated one
+    // escalates to your permission prompt. "auto-retry": never escalates; every denial goes
+    // back to the agent. "ask-user": every denial escalates to your permission prompt.
     "denyMode": "both",
 
-    // Number of consecutive denials before escalating to interactive user confirmation
+    // How many denials of the same command escalate to your permission prompt
     "consecutiveThreshold": 2,
 
-    // Time window in milliseconds to group consecutive denials (default: 5 minutes)
+    // How long a denial counts toward that, in milliseconds (default 5 minutes)
     "slidingWindowMs": 300000,
 
-    // When true, denial messages instruct the agent to explain its reasoning to the user before retrying
+    // When true, a denial tells the agent to explain to you why the command is safe before retrying
     "instructAgentOnDenial": true,
 
-    // When true, no operator can answer a prompt on this box: an escalation becomes a denial that
-    // tells the agent to stop and report, instead of a permission nobody will ever answer
+    // When true, nobody can answer a prompt on this machine: an escalation becomes a denial that
+    // tells the agent to stop and report, instead of a permission nobody will ever answer. A
+    // deterministic rule's refusal is a denial here in every denyMode.
     "headless": false,
 
+    // An escalation prompt nobody answers within this many minutes is declined, and the agent
+    // is told you were unavailable (OpenCode, and agy inside tmux)
+    "escalationTimeoutMinutes": 5,
+
     // A script tracked in git and byte-identical to its repo's remote default branch went through
-    // that branch's merge gate: allow it without the model. Set false to classify every script.
-    "trustLandedScripts": true
+    // that branch's merge gate: allow it without the model when the line runs only it (`./x.sh args`
+    // or `bash x.sh args`: no redirect, pipe, env prefix, wrapper, interpreter flag or second
+    // command). Set false to classify every script.
+    "trustLandedScripts": true,
+
+    // Branches whose force-push or deletion on a remote is a harm, and that a plain `git push`
+    // is never fast-allowed to (a push there goes to the model). Also the branches tried, in
+    // order, as a repository's default when its remote names none. Add your own trunk here,
+    // e.g. ["main", "master", "develop"]. AUTO_CLASSIFIER_PROTECTED_BRANCHES overrides it.
+    "protectedBranches": ["main", "master"]
+
+    // Instructions added to the model's prompt, for facts only you know about this machine.
+    // llm.instructionsAppend and jev.instructionsAppend override it for one model.
+    // "instructionsAppend": "This machine hosts the staging database; /srv/pg is its data."
   },
 
-  // Deterministic Fast Rules
-  "rules": {
-    // Hard blocks evaluated via regex before LLM call
-    "fastDeny": [
-      "^\\s*mkfs(\\.[a-z0-9]+)?\\s+",
-      "^\\s*dd\\s+.*of=\\/dev\\/(sd[a-z]|nvme[0-9]n[0-9]|vd[a-z])",
-      ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\};\\s*:"
-    ],
-
-    // Fast allows evaluated via regex before LLM call (skips LLM entirely for <1ms latency).
-    // A rule only ever vouches for the exact verb it names -- `git branch` below
-    // is deliberately list-shaped only (no -D/-d/-f/-m/-M/--delete/--force):
-    // a wider `git\s+branch\b` would fast-allow `git branch -D main` too.
-    "fastAllow": [
-      "^\\s*git\\s+(status|diff|log|show)\\b",
-      "^\\s*git\\s+branch(?:\\s+(?:-a|-r|-v|-vv|--list|--all|--remotes|--show-current|--verbose))*\\s*$",
-      "^\\s*ls(\\s+-[a-zA-Z0-9]+)*(\\s+[^\\s;&|]+)?$",
-      "^\\s*pwd$",
-      "^\\s*whoami$",
-      "^\\s*cargo\\s+(check|clippy)$",
-      "^\\s*pytest(\\s+[^;&|]+)?$",
-      "^\\s*npm\\s+test\\b"
-    ],
-
-    // Path prefixes a fast-allowed command may redirect output into; a redirect anywhere else defers to the LLM
-    "scratchWriteRoots": ["/tmp/"]
-  },
+  // Deterministic fast rules. Leave this block out to keep the built-in lists: setting
+  // "fastDeny" or "fastAllow" REPLACES that whole default list rather than adding to it,
+  // so a list you set must carry every rule you still want. The defaults are in
+  // src/config.ts; "node bin/auto-classifier.js config" prints the ones in force.
+  // "rules": {
+  //   // Hard blocks, tested against the whole line and every simple command in it
+  //   "fastDeny": [
+  //     "^\\s*mkfs(\\.[a-z0-9]+)?\\s+",
+  //     "^\\s*dd\\s+.*of=\\/dev\\/(sd[a-z]|nvme[0-9]n[0-9]|vd[a-z])",
+  //     ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\};\\s*:"
+  //   ],
+  //
+  //   // Allowed with no model call when every simple command on the line matches one.
+  //   // A rule vouches for every verb it matches: a wider `git\s+branch\b` would
+  //   // fast-allow `git branch -D main` too, so keep each rule to the exact verbs it means.
+  //   "fastAllow": [
+  //     "^\\s*git\\s+(status|diff|log|show)\\b",
+  //     "^\\s*ls(\\s+-[a-zA-Z0-9]+)*(\\s+[^\\s;&|]+)?$",
+  //     "^\\s*pwd$"
+  //   ],
+  //
+  //   // Path prefixes a fast-allowed command may redirect output into (a literal path, not a
+  //   // symlink, not a sensitive startup location); a redirect anywhere else goes to the model
+  //   "scratchWriteRoots": ["/tmp/"]
+  // },
 
   // One JSON line per decision (command, stage, verdict, reason, latency). Path "" means
   // ~/.config/auto-classifier/telemetry.jsonl. The classifier's own log is beside it.
-  "telemetry": { "enabled": true, "path": "" },
+  // Past maxBytes (default 50 MB; 0 never rotates) the file moves to telemetry.jsonl.1,
+  // replacing any older one; the log does the same at 10 MB.
+  "telemetry": { "enabled": true, "path": "", "maxBytes": 52428800 },
 
   // Used when llm.provider is "jev". Jev answers typed questions instead of
-  // writing text: the gate asks one allow/deny choice and nine risk questions
-  // in a single call, and allows only when the choice is "allow" at
-  // minConfidence or more and every risk is below riskThreshold.
+  // writing text: the gate asks one allow/deny choice and eleven risk questions
+  // in a single call, and allows only when the choice is "allow", every risk is
+  // below riskThreshold, and the choice is sure enough: minConfidence or more,
+  // or, when every risk is below lowRiskCeiling, p(allow) of lowRiskMinAllow or more.
   "jev": {
     "baseUrl": "https://api.typesafe.ai",
     "apiKey": "env:TYPESAFE_API_KEY",
     // Or keep the key out of this process: a helper that reads the request body
     // on stdin and prints Jev's response.
-    // "command": ["/usr/local/bin/jev-request"],
+    // "command": ["/usr/local/bin/jev-ask"],
     "model": "jev-1.13.0",
     "riskThreshold": 0.7,
     "minConfidence": 0.6,
+    "lowRiskCeiling": 0.2,
+    "lowRiskMinAllow": 0.6,
     "timeoutMs": 10000
+    // Instructions added to Jev's verdict question only (its instructions, not either option's description); defaults to policy.instructionsAppend
+    // "instructionsAppend": "..."
   },
   // agy inside tmux: accept agy's own prompt for a command the gate allowed,
   // so with toolPermission "request-review" only escalations prompt you.
-  "agy": { "autoAcceptInTmux": false }
+  // alwaysProceedEscalations: when agy will approve, by itself, an escalation
+  // the model actually raised (always-proceed, or --dangerously-skip-permissions),
+  // "run" lets it run as you chose, logged and recorded with telemetry source
+  // "always-proceed"; "stop" denies it, tells the agent to stop and ask you,
+  // and records source "no-prompt". Any other value is treated as "stop" and
+  // logged. Neither applies to an escalation no model judged (a refusal of
+  // the gate's own files, rules.fastDeny or an unsanctioned upload, an
+  // escalated file write, a script cut short before the model saw it whole, a
+  // retry while no model could be reached): with nobody to decide it, it is
+  // refused, recorded as "gate-kept".
+  "agy": { "autoAcceptInTmux": false, "alwaysProceedEscalations": "run" }
 }

@@ -1,5 +1,8 @@
 import { execFileSync, spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { log } from "../log.js";
+import { gateConfigDir } from "../paths.js";
 
 /**
  * Auto-accepting agy's permission prompt for a command the gate allowed.
@@ -30,6 +33,9 @@ const QUESTION = /^\s*Run this command\?\s*$/;
 const YES_SELECTED = /^\s*>\s*1\.\s*Yes, run command\s*$/;
 const RULE = /^\s*[─━-]{8,}\s*$/;
 
+const HIDDEN_LINES = /^\s*[.⋯…\s]*(?:\(\s*)?\d+\s+(?:more\s+lines?|lines?\s+(?:hidden|more))(?:\s*\))?[.⋯…\s]*$/i;
+const TRUNCATION_SUFFIX = /[.⋯…\s]*(?:\(\s*)?\d+\s+(?:more\s+lines?|lines?\s+(?:hidden|more))(?:\s*\))?[.⋯…\s]*$/i;
+
 /** The last permission prompt on the screen, or null when none is showing. */
 export function readPermissionPrompt(screen: string): PermissionPrompt | null {
   const lines = screen.split("\n");
@@ -51,7 +57,12 @@ export function readPermissionPrompt(screen: string): PermissionPrompt | null {
   }
   if (question < 0) return null;
 
-  const command = lines.slice(start + 1, question).map((l) => l.trim()).filter(Boolean).join(" ");
+  const command = lines
+    .slice(start + 1, question)
+    .map((l) => l.trim())
+    .filter((l) => Boolean(l) && !HIDDEN_LINES.test(l))
+    .map((l) => l.replace(TRUNCATION_SUFFIX, "").trim())
+    .join(" ");
   const firstOption = lines.slice(question + 1).find((l) => l.trim() !== "") ?? "";
 
   let hasReason = false;
@@ -150,18 +161,32 @@ const squash = (s: string) => s.replace(/\s+/g, "");
  * highlighted, and no hook reason on it.
  */
 export function promptMatches(prompt: PermissionPrompt | null, allowed: string): boolean {
-  return (
-    prompt !== null &&
-    prompt.yesSelected &&
-    !prompt.hasReason &&
-    squash(allowed) !== "" &&
-    squash(prompt.command) === squash(allowed)
-  );
+  if (!prompt || !prompt.yesSelected || prompt.hasReason) return false;
+  return shownCommandMatches(prompt.command, allowed);
+}
+
+/**
+ * The command agy's prompt shows is `command`: the same text compared without
+ * whitespace, or, where agy cut a long command short (an ellipsis, a
+ * "N lines hidden" marker), a prefix of it at least 20 characters long.
+ * Shared by the accept watcher and the escalation-timeout watcher, so both
+ * recognise the same prompts.
+ */
+export function shownCommandMatches(shown: string, command: string): boolean {
+  const sAllowed = squash(command);
+  const sPrompt = squash(shown);
+  if (!sAllowed || !sPrompt) return false;
+  if (sPrompt === sAllowed) return true;
+
+  // agy truncates long commands on screen with an ellipsis or shows only the preview
+  const cleanPrompt = sPrompt.replace(/(?:[.⋯…]+|\(?\d+(?:morelines?|lines?(?:hidden|more))\)?)+$/gi, "").replace(/\\+$/, "");
+  return cleanPrompt.length >= 20 && sAllowed.startsWith(cleanPrompt);
 }
 
 export interface PaneIO {
   capture(pane: string): string;
   pressEnter(pane: string): void;
+  rejectPrompt?(pane: string, stepsDown?: number): void;
   sleep(ms: number): Promise<void>;
 }
 
@@ -171,8 +196,42 @@ export const tmuxPane: PaneIO = {
   pressEnter: (pane) => {
     execFileSync("tmux", ["send-keys", "-t", pane, "Enter"], { timeout: 2000, windowsHide: true });
   },
+  rejectPrompt: (pane, stepsDown = 1) => {
+    const keys: string[] = [];
+    for (let i = 0; i < stepsDown; i++) {
+      keys.push("Down");
+    }
+    keys.push("Enter");
+    execFileSync("tmux", ["send-keys", "-t", pane, ...keys], { timeout: 2000, windowsHide: true });
+  },
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
+
+/** Finds how many times to press Down from option 1 to reach the 'No, ...' option. */
+export function findRejectOption(screen: string): { stepsDown: number } | null {
+  const lines = screen.split("\n");
+  let qIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (QUESTION.test(lines[i]!) || FILE_QUESTION.test(lines[i]!)) {
+      qIdx = i;
+      break;
+    }
+  }
+  if (qIdx < 0) return null;
+
+  const optionRegex = /^\s*>?\s*(\d+)\.\s*(.+)$/;
+  let steps = 0;
+  for (let i = qIdx + 1; i < lines.length; i++) {
+    const m = optionRegex.exec(lines[i]!);
+    if (m) {
+      if (/^\s*No\b/i.test(m[2]!)) {
+        return { stepsDown: steps };
+      }
+      steps++;
+    }
+  }
+  return null;
+}
 
 export type AcceptResult = "accepted" | "not-shown" | "mismatch" | "error";
 
@@ -202,11 +261,11 @@ export async function acceptWhenShown(
     for (let waited = 0; waited <= windowMs; waited += pollMs) {
       const [shown, matches] = look(io.capture(pane));
       if (matches) {
-        if (!look(io.capture(pane))[1]) {
-          return "mismatch";
+        // Double-check immediately before Enter; if transiently unmatching (e.g. redraw blink), keep polling
+        if (look(io.capture(pane))[1]) {
+          io.pressEnter(pane);
+          return "accepted";
         }
-        io.pressEnter(pane);
-        return "accepted";
       }
       if (shown) sawOther = true;
       await io.sleep(pollMs);
@@ -257,3 +316,197 @@ export async function runAcceptWatcher(pane: string): Promise<void> {
   const what = target.kind === "file" ? `file ${target.path}` : target.command;
   log(`agy-accept: ${result} "${what.slice(0, 120).replace(/\n/g, " ")}"`);
 }
+
+export interface EscalationRecord {
+  sessionId?: string;
+  target: AcceptTarget;
+  timedOutAt: number;
+  timeoutMinutes: number;
+}
+
+/**
+ * What the agent is told when an escalation it raised went unanswered. It must
+ * not read as an invitation to get the same effect some other way.
+ */
+export function timeoutMessage(target: AcceptTarget | undefined, timeoutMinutes = 5): string {
+  const what = target?.kind === "file" ? `the file write to \`${target.path}\`` : `\`${target?.command ?? "the command"}\``;
+  return (
+    `[User Unavailable - Timeout] The user did not answer the approval request for ${what} within ${timeoutMinutes} minutes, so it was denied.\n\n` +
+    `Do NOT try to achieve this step another way, and do not rephrase or split the command to get past the classifier. ` +
+    `Set this step aside and continue any other work that does not depend on it. ` +
+    `In your final report, list the blocked command and why it is needed, for the user to decide.`
+  );
+}
+
+export function getTimeoutFilePath(sessionId?: string): string {
+  const base = process.env.AUTO_CLASSIFIER_STATE_DIR || gateConfigDir();
+  const dir = path.join(base, "timeouts");
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  } catch {}
+  const name = sessionId ? `${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json` : "last-timeout.json";
+  return path.join(dir, name);
+}
+
+export function recordTimeout(record: EscalationRecord): void {
+  try {
+    const file = getTimeoutFilePath(record.sessionId);
+    fs.writeFileSync(file, JSON.stringify(record, null, 2), "utf-8");
+    const lastFile = getTimeoutFilePath();
+    fs.writeFileSync(lastFile, JSON.stringify(record, null, 2), "utf-8");
+  } catch (err) {
+    log(`agy-timeout: could not record timeout: ${(err as Error).message}`);
+  }
+}
+
+export function consumeLastTimeout(sessionId?: string): EscalationRecord | null {
+  try {
+    const file = getTimeoutFilePath(sessionId);
+    const lastFile = getTimeoutFilePath();
+    if (sessionId && fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf-8")) as EscalationRecord;
+      try { fs.unlinkSync(file); } catch {}
+      try {
+        if (fs.existsSync(lastFile)) {
+          const lastData = JSON.parse(fs.readFileSync(lastFile, "utf-8")) as EscalationRecord;
+          if (lastData.sessionId === sessionId) {
+            fs.unlinkSync(lastFile);
+          }
+        }
+      } catch {}
+      return data;
+    }
+    if (fs.existsSync(lastFile)) {
+      const data = JSON.parse(fs.readFileSync(lastFile, "utf-8")) as EscalationRecord;
+      if (Date.now() - data.timedOutAt < 300000) {
+        try { fs.unlinkSync(lastFile); } catch {}
+        return data;
+      }
+    }
+  } catch (err) {
+    log(`agy-timeout: could not read timeout record: ${(err as Error).message}`);
+  }
+  return null;
+}
+
+export type EscalationResult = "timed-out" | "answered" | "not-shown" | "error";
+
+/**
+ * Watch `pane` for an escalation prompt matching `target`.
+ * If it appears and remains unanswered for `timeoutMs`, auto-deny it.
+ */
+export async function watchEscalation(
+  pane: string,
+  target: AcceptTarget,
+  timeoutMs: number,
+  sessionId?: string,
+  io: PaneIO = tmuxPane,
+  pollMs = 500,
+  initialWaitMs = 15000
+): Promise<EscalationResult> {
+  const look = (screen: string): boolean => {
+    if (target.kind === "command") {
+      const p = readPermissionPrompt(screen);
+      return p !== null && shownCommandMatches(p.command, target.command);
+    }
+    const p = readFilePrompt(screen);
+    return p !== null && samePath(p.path, target.path);
+  };
+
+  let promptShown = false;
+  try {
+    for (let waited = 0; waited <= initialWaitMs; waited += 100) {
+      if (look(io.capture(pane))) {
+        promptShown = true;
+        break;
+      }
+      await io.sleep(100);
+    }
+  } catch (err) {
+    log(`agy-timeout: ${(err as Error).message}`);
+    return "error";
+  }
+
+  if (!promptShown) {
+    return "not-shown";
+  }
+
+  const startTime = Date.now();
+  try {
+    while (Date.now() - startTime < timeoutMs) {
+      await io.sleep(pollMs);
+      if (!look(io.capture(pane))) {
+        return "answered";
+      }
+    }
+
+    const screen = io.capture(pane);
+    if (look(screen)) {
+      const rejectOpt = findRejectOption(screen);
+      const stepsDown = rejectOpt ? rejectOpt.stepsDown : 1;
+      if (io.rejectPrompt) {
+        io.rejectPrompt(pane, stepsDown);
+      } else {
+        io.pressEnter(pane);
+      }
+      const timeoutMinutes = Math.max(1, Math.round(timeoutMs / 60000));
+      recordTimeout({
+        sessionId,
+        target,
+        timedOutAt: Date.now(),
+        timeoutMinutes,
+      });
+      const what = target.kind === "file" ? `file ${target.path}` : target.command;
+      log(`agy-timeout: auto-denied after ${timeoutMinutes}m "${what.slice(0, 120).replace(/\n/g, " ")}"`);
+      return "timed-out";
+    }
+  } catch (err) {
+    log(`agy-timeout: ${(err as Error).message}`);
+    return "error";
+  }
+
+  return "answered";
+}
+
+export function startEscalationWatcher(
+  pane: string,
+  target: AcceptTarget,
+  timeoutMinutes: number,
+  sessionId?: string,
+  cliPath = process.argv[1] ?? ""
+): void {
+  try {
+    const child = spawn(process.execPath, [cliPath, "agy-timeout", pane], {
+      detached: true,
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+    });
+    child.on("error", (err) => log(`agy-timeout: could not start the watcher: ${err.message}`));
+    child.stdin?.end(JSON.stringify({ target, timeoutMinutes, sessionId }));
+    child.unref();
+  } catch (err) {
+    log(`agy-timeout: could not start the watcher: ${(err as Error).message}`);
+  }
+}
+
+export async function runEscalationWatcher(pane: string): Promise<void> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const raw = Buffer.concat(chunks).toString("utf-8");
+  let target: AcceptTarget = { kind: "command", command: "" };
+  let timeoutMinutes = 5;
+  let sessionId: string | undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.target) target = parsed.target;
+    if (parsed.timeoutMinutes) timeoutMinutes = Number(parsed.timeoutMinutes);
+    if (parsed.sessionId) sessionId = String(parsed.sessionId);
+  } catch {
+    target = { kind: "command", command: raw };
+  }
+  const timeoutMs = timeoutMinutes * 60 * 1000;
+  const result = await watchEscalation(pane, target, timeoutMs, sessionId);
+  const what = target.kind === "file" ? `file ${target.path}` : target.command;
+  log(`agy-timeout: ${result} "${what.slice(0, 120).replace(/\n/g, " ")}"`);
+}
+

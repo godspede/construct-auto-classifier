@@ -1,5 +1,5 @@
 /**
- * The exact opencode payload shapes the plugin's two hooks receive, built
+ * The exact OpenCode payload shapes the plugin's two hooks receive, built
  * from one definition so bench/run.ts and tests/battery-fidelity.test.ts can
  * never drift from each other -- or from the adapter they both drive.
  *
@@ -69,7 +69,7 @@ function extractAccesses(block: string, rootAlt: string): string[] {
  * - `parameters.command`: a secondary OR-fallback
  *   (`output?.args?.command || input?.parameters?.command`) the battery's
  *   payload never needs to hit, because `output.args.command` is always
- *   populated in what opencode actually sends.
+ *   populated in what OpenCode actually sends.
  * - `args.description`: mutated to carry the escalation banner into the
  *   operator's prompt, but never read to decide a verdict.
  */
@@ -106,7 +106,7 @@ export function coversField(paths: string[], field: string): boolean {
 
 // -------------------------------------------------------------------------
 // Payload builders. These are the ONLY place the battery (bench/run.ts) and
-// the fidelity test (tests/battery-fidelity.test.ts) construct an opencode
+// the fidelity test (tests/battery-fidelity.test.ts) construct an OpenCode
 // payload -- so a shape either of them drives is a shape they both drive.
 // -------------------------------------------------------------------------
 
@@ -115,9 +115,9 @@ export interface CaseIdentity {
   callId: string;
 }
 
-/** `tool.execute.before`'s first argument, exactly as opencode builds it for a bash tool call. */
-export function beforeHookInput(id: CaseIdentity): { tool: string; sessionID: string; callID: string } {
-  return { tool: "bash", sessionID: id.sessionId, callID: id.callId };
+/** `tool.execute.before`'s first argument, exactly as OpenCode builds it for a tool call -- `bash` unless a file-tool case names its own. */
+export function beforeHookInput(id: CaseIdentity, tool: string = "bash"): { tool: string; sessionID: string; callID: string } {
+  return { tool, sessionID: id.sessionId, callID: id.callId };
 }
 
 /** `tool.execute.before`'s second, mutable argument: the tool call's own output/args object. */
@@ -126,9 +126,36 @@ export function beforeHookOutput(command: string, cwd?: string): { args: { comma
 }
 
 /**
+ * `tool.execute.before`'s second argument for a `read`/`write`/`edit` file
+ * tool call, exactly as OpenCode builds it (`args.filePath`, plus `content`
+ * for a write or `oldString`/`newString` for an edit; the shape was verified
+ * against a live OpenCode instance).
+ */
+export function fileToolBeforeHookOutput(
+  filePath: string,
+  extra: { content?: string; oldString?: string; newString?: string } = {}
+): { args: { filePath: string; content?: string; oldString?: string; newString?: string } } {
+  return { args: { filePath, ...extra } };
+}
+
+/**
+ * `tool.execute.before`'s second argument for a `grep`/`glob`/`list` call -- an
+ * optional `path` scoping the search (omitted, it scopes to the active
+ * location), and grep's or glob's own `pattern`.
+ */
+export function searchToolBeforeHookOutput(searchPath?: string, pattern?: string): { args: { path?: string; pattern?: string } } {
+  return { args: { ...(searchPath ? { path: searchPath } : {}), ...(pattern ? { pattern } : {}) } };
+}
+
+/** `tool.execute.before`'s second argument for a `patch`/`apply_patch` call: a single `patchText` blob. */
+export function patchToolBeforeHookOutput(patchText: string): { args: { patchText: string } } {
+  return { args: { patchText } };
+}
+
+/**
  * The `event` hook's argument for a `permission.asked` event.
  *
- * `shape` picks which of the two places opencode has shipped `callID` under
+ * `shape` picks which of the two places OpenCode has shipped `callID` under
  * `properties` -- the adapter reads `props.callID || props.tool?.callID`, and
  * `opencode-adapter.test.ts`'s own `asked()` helper defaults to the nested
  * one, so this does too.

@@ -1,6 +1,6 @@
 
       ▄▀▀▄        Antigravity CLI 1.2.7
-     ▀▀▀▀▀▀       user@example.com (Google AI Pro)
+     ▀▀▀▀▀▀       user@example.com (Paid plan)
     ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (Low)
    ▄▀▀    ▀▀▄     D:/tmp/gate-test
   ▄▀▀      ▀▀▄
@@ -9,7 +9,7 @@
 > Using your write_to_file tool (not a shell command), create inside.txt containing: hello. Then stop.
 
 ▸ Thought for 4s, 236 tokens
-  No "workbench" line was detected. The goal is to create a file named "inside.txt" and write "hello" to it. Utilizi...
+  The goal is to create a file named "inside.txt" and write "hello" to it. Utilizi...
 
 ● Create(D:/tmp/gate-test/inside.txt) (ctrl+o to expand)
 

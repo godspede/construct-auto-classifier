@@ -1,8 +1,16 @@
-import type { LlmConfig, ClassificationResult, FileContext, Usage } from "../types.js";
+import type { LlmConfig, ClassificationResult, FileContext, GateFacts, Usage } from "../types.js";
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.js";
 import { log } from "../log.js";
 
-export function parseClassificationResponse(rawContent: string): { allow: boolean; reason: string } {
+/** A reply that parsed into no verdict: the model answered, but not in the shape asked for. */
+class UnparseableReply extends Error {
+  constructor(readonly verdict: { allow: false; reason: string }) {
+    super(`unparseable reply: ${verdict.reason}`);
+  }
+}
+
+/** The verdict in a reply, or an `UnparseableReply` carrying the fail-closed deny `parseClassificationResponse` returns. */
+function parseVerdict(rawContent: string): { allow: boolean; reason: string } | UnparseableReply {
   let text = rawContent.trim();
 
   // Strip markdown fences ```json ... ``` if model wrapped it
@@ -29,13 +37,15 @@ export function parseClassificationResponse(rawContent: string): { allow: boolea
       ? parsed.reason
       : (allow ? "Allowed by security classifier" : "Denied by security classifier");
     return { allow, reason };
-  } catch (err) {
-    // If parsing fails, fail closed (deny) for safety
-    return {
-      allow: false,
-      reason: `Failed to parse classifier JSON output (${text.slice(0, 100)})`,
-    };
+  } catch {
+    return new UnparseableReply({ allow: false, reason: `Failed to parse classifier JSON output (${text.slice(0, 100)})` });
   }
+}
+
+/** The verdict in a reply; one that does not parse fails closed (deny). */
+export function parseClassificationResponse(rawContent: string): { allow: boolean; reason: string } {
+  const v = parseVerdict(rawContent);
+  return v instanceof UnparseableReply ? v.verdict : v;
 }
 
 /**
@@ -43,7 +53,7 @@ export function parseClassificationResponse(rawContent: string): { allow: boolea
  * LlmClient is the production implementation; tests inject a scripted one.
  */
 export interface Classifier {
-  classify(command: string, fileContext?: FileContext, sessionId?: string): Promise<ClassificationResult>;
+  classify(command: string, fileContext?: FileContext, sessionId?: string, facts?: GateFacts): Promise<ClassificationResult>;
 }
 
 /**
@@ -190,17 +200,23 @@ export class LlmClient implements Classifier {
     }
   }
 
-  async classify(command: string, fileContext?: FileContext, sessionId?: string): Promise<ClassificationResult> {
-    const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(command, fileContext);
+  async classify(command: string, fileContext?: FileContext, sessionId?: string, facts?: GateFacts): Promise<ClassificationResult> {
+    const systemPrompt = buildSystemPrompt(this.config.instructionsAppend, this.config.sanctionedRemotes, this.config.protectedBranches);
+    const userPrompt = buildUserPrompt(command, fileContext, facts);
     const timeout = this.config.timeoutMs || 15000;
+    const total = this.config.totalTimeoutMs || 18000;
+    const deadline = Date.now() + total;
+    // Each request gets its own timeout or what is left of the chain's
+    // deadline, whichever is shorter; zero means the deadline has passed.
+    const budget = () => Math.max(0, Math.min(timeout, deadline - Date.now()));
+    let outOfTime = false;
     const usage: Usage = { input_tokens: 0, output_tokens: 0, calls: 0 };
 
     // 0. Optional cheap first pass. An allow from it is final; a deny, an
     // unparseable reply, or an error hands the same prompt to the primary model.
     if (this.config.triageModel && this.config.triageModel !== this.config.model) {
       try {
-        const triageRaw = await this.executeRequest(this.config.triageModel, userPrompt, systemPrompt, timeout, sessionId, usage);
+        const triageRaw = await this.executeRequest(this.config.triageModel, userPrompt, systemPrompt, budget(), sessionId, usage);
         const triage = parseClassificationResponse(triageRaw);
         if (triage.allow) {
           return { allow: true, reason: triage.reason, source: "triage", usage };
@@ -210,43 +226,72 @@ export class LlmClient implements Classifier {
       }
     }
 
-    // 1. Attempt with primary model
-    try {
-      const rawResponse = await this.executeRequest(this.config.model, userPrompt, systemPrompt, timeout, sessionId, usage);
-      const decision = parseClassificationResponse(rawResponse);
-      return {
-        allow: decision.allow,
-        reason: decision.reason,
-        source: "llm",
-        usage,
-      };
-    } catch (primaryErr) {
-      log(`primary model (${this.config.model}) failed: ${(primaryErr as Error).message}`);
-
-      // 2. Attempt fallback model if configured
-      if (this.config.fallbackModel && this.config.fallbackModel !== this.config.model) {
-        try {
-          log(`retrying with fallback model (${this.config.fallbackModel})`);
-          const fallbackRaw = await this.executeRequest(this.config.fallbackModel, userPrompt, systemPrompt, timeout, sessionId, usage);
-          const decision = parseClassificationResponse(fallbackRaw);
-          return {
-            allow: decision.allow,
-            reason: decision.reason,
-            source: "fallback",
-            usage,
-          };
-        } catch (fallbackErr) {
-          log(`fallback model (${this.config.fallbackModel}) also failed: ${(fallbackErr as Error).message}`);
-        }
+    // 1. The primary model, then the fallback chain (fallbackModel, then
+    // fallbackModels), skipping the primary and any repeat. The first reply
+    // that parses wins. A link that fails -- unreachable, erroring, or
+    // answering with something that is not a verdict -- is logged and the next
+    // is tried.
+    let firstErr: Error | undefined;
+    let unparseable: UnparseableReply | undefined;
+    const chain: Array<[string, ClassificationResult["source"]]> = [
+      [this.config.model, "llm"],
+      ...this.fallbackChain().map((m): [string, ClassificationResult["source"]] => [m, "fallback"]),
+    ];
+    for (const [model, source] of chain) {
+      const left = budget();
+      if (left === 0) {
+        outOfTime = true;
+        log(`model chain stopped before ${model}: llm.totalTimeoutMs (${total} ms) has passed`);
+        break;
       }
+      try {
+        if (source === "fallback") log(`retrying with fallback model (${model})`);
+        const raw = await this.executeRequest(model, userPrompt, systemPrompt, left, sessionId, usage);
+        const decision = parseVerdict(raw);
+        if (decision instanceof UnparseableReply) throw decision;
+        return { allow: decision.allow, reason: decision.reason, source, usage };
+      } catch (err) {
+        const e = err as Error;
+        firstErr ??= e;
+        if (e instanceof UnparseableReply) unparseable = e;
+        log(source === "llm" ? `primary model (${model}) failed: ${e.message}` : `fallback model (${model}) also failed: ${e.message}`);
+      }
+    }
 
-      // If all LLM calls fail, fail closed with an informative reason
+    // The whole chain is exhausted; fail closed. A model that answered, only
+    // not parseably, gave a verdict of sorts: that deny is reused on a retry
+    // like any other, so re-asking cannot re-roll it into an allow. Only a
+    // chain that never got an answer at all is an outage (source "error"),
+    // whose retry asks again.
+    if (unparseable) {
+      return { ...unparseable.verdict, source: "llm", usage };
+    }
+    if (outOfTime || (firstErr && Date.now() >= deadline)) {
       return {
         allow: false,
-        reason: `LLM classification unreachable: ${(primaryErr as Error).message}`,
+        reason: `LLM classification unreachable: no model answered within llm.totalTimeoutMs (${total} ms)${firstErr ? `; first failure: ${firstErr.message}` : ""}`,
         source: "error",
         usage,
       };
     }
+    return {
+      allow: false,
+      reason: `LLM classification unreachable: ${firstErr?.message ?? "no model configured"}`,
+      source: "error",
+      usage,
+    };
+  }
+
+  /** `fallbackModel` first, then `fallbackModels` in order, minus the primary model and any duplicate. */
+  private fallbackChain(): string[] {
+    const candidates = [this.config.fallbackModel, ...(this.config.fallbackModels ?? [])];
+    const seen = new Set<string>();
+    const chain: string[] = [];
+    for (const m of candidates) {
+      if (!m || m === this.config.model || seen.has(m)) continue;
+      seen.add(m);
+      chain.push(m);
+    }
+    return chain;
   }
 }

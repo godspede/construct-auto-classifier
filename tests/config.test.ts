@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/config.js";
+import { evaluateFastRules } from "../src/rules/fast-rules.js";
+import { BENCH_CONFIG, benchConfig } from "../bench/config.js";
 
 // Every case passes an explicit config path, so a real config under the
 // running user's home can never leak into what these assert.
@@ -44,9 +46,27 @@ describe("loadConfig defaults", () => {
     expect(c.llm.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(c.llm.model).toBe("deepseek/deepseek-v4.1-flash");
     expect(c.llm.fallbackModel).toBeUndefined();
+    expect(c.llm.fallbackModels).toEqual([]);
     expect(c.llm.triageModel).toBeUndefined();
     expect(c.llm.maxTokens).toBe(120);
     expect(c.llm.maxFileChars).toBe(2000);
+  });
+
+  it("reads an ordered fallbackModels list from the file", () => {
+    const c = load('{ "llm": { "fallbackModels": ["ollama-cloud/mistral-large-3:675b", "ollama-cloud/glm-5.3-flash"] } }');
+    expect(c.llm.fallbackModels).toEqual(["ollama-cloud/mistral-large-3:675b", "ollama-cloud/glm-5.3-flash"]);
+  });
+
+  it("reads a comma-separated fallbackModels list from the env var, overriding the file", () => {
+    const prev = process.env.AUTO_CLASSIFIER_FALLBACK_MODELS;
+    process.env.AUTO_CLASSIFIER_FALLBACK_MODELS = "tier-2, tier-3";
+    try {
+      const c = load('{ "llm": { "fallbackModels": ["from-file"] } }');
+      expect(c.llm.fallbackModels).toEqual(["tier-2", "tier-3"]);
+    } finally {
+      if (prev === undefined) delete process.env.AUTO_CLASSIFIER_FALLBACK_MODELS;
+      else process.env.AUTO_CLASSIFIER_FALLBACK_MODELS = prev;
+    }
   });
 
   it("reads the policy keys with their documented defaults", () => {
@@ -58,16 +78,29 @@ describe("loadConfig defaults", () => {
       instructAgentOnDenial: true,
       headless: false,
       trustLandedScripts: true,
+      escalationTimeoutMinutes: 5,
+      protectedBranches: ["main", "master"],
     });
     expect(c.rules.scratchWriteRoots).toEqual(["/tmp/"]);
-    expect(c.telemetry).toEqual({ enabled: true, path: "" });
+    expect(c.telemetry).toEqual({ enabled: true, path: "", maxBytes: 50 * 1024 * 1024 });
   });
 
-  it("honours a file's own values, including the auto-mode.jsonc spellings", () => {
-    const c = load('{ "denyMode": "ask-user", "escalation": { "consecutive": 2 }, "llm": { "triageModel": "ollama-cloud/small", "maxTokens": 40 } }');
+  it("lets an always-proceed escalation run unless agy.alwaysProceedEscalations is stop", () => {
+    expect(load("{}").agy?.alwaysProceedEscalations).toBe("run");
+    expect(load('{ "agy": { "alwaysProceedEscalations": "run" } }').agy?.alwaysProceedEscalations).toBe("run");
+    expect(load('{ "agy": { "alwaysProceedEscalations": "stop" } }').agy?.alwaysProceedEscalations).toBe("stop");
+  });
+
+  it("fails closed to stop on an unrecognised alwaysProceedEscalations, and logs the bad value", () => {
+    expect(load('{ "agy": { "alwaysProceedEscalations": "stpo" } }').agy?.alwaysProceedEscalations).toBe("stop");
+    expect(fs.readFileSync(process.env.AUTO_CLASSIFIER_LOG!, "utf-8")).toContain('agy.alwaysProceedEscalations "stpo" is not "run" or "stop" -- treating it as "stop"');
+  });
+
+  it("honours a file's own values", () => {
+    const c = load('{ "policy": { "denyMode": "ask-user", "consecutiveThreshold": 3 }, "llm": { "triageModel": "openai/gpt-oss-20b", "maxTokens": 40 } }');
     expect(c.policy.denyMode).toBe("ask-user");
-    expect(c.policy.consecutiveThreshold).toBe(2);
-    expect(c.llm.triageModel).toBe("ollama-cloud/small");
+    expect(c.policy.consecutiveThreshold).toBe(3);
+    expect(c.llm.triageModel).toBe("openai/gpt-oss-20b");
     expect(c.llm.maxTokens).toBe(40);
   });
 });
@@ -116,11 +149,11 @@ describe("loadConfig local overlay", () => {
       '{ "llm": { "model": "shared/model", "fallbackModel": "shared/fallback" }, "rules": { "fastAllow": ["^\\\\s*ls$"] } }'
     );
     process.env.AUTO_CLASSIFIER_LOCAL_CONFIG = writeHome(
-      '{ "llm": { "baseUrl": "https://box.local/v1", "apiKey": "box-secret" }, "policy": { "denyMode": "ask-user" } }'
+      '{ "llm": { "baseUrl": "https://machine.local/v1", "apiKey": "machine-secret" }, "policy": { "denyMode": "ask-user" } }'
     );
     const c = loadConfig(configFile);
-    expect(c.llm.baseUrl).toBe("https://box.local/v1");
-    expect(c.llm.apiKey).toBe("box-secret");
+    expect(c.llm.baseUrl).toBe("https://machine.local/v1");
+    expect(c.llm.apiKey).toBe("machine-secret");
     expect(c.policy.denyMode).toBe("ask-user");
     // untouched by the overlay
     expect(c.llm.model).toBe("shared/model");
@@ -152,10 +185,10 @@ describe("loadConfig local overlay", () => {
   });
 
   it("reads and trims llm.apiKeyFile when apiKey is absent", () => {
-    const keyFile = writeHome("  box-token-from-file\n");
+    const keyFile = writeHome("  machine-token-from-file\n");
     process.env.AUTO_CLASSIFIER_LOCAL_CONFIG = writeHome(JSON.stringify({ llm: { apiKeyFile: keyFile } }));
     const c = loadConfig(writeHome("{}"));
-    expect(c.llm.apiKey).toBe("box-token-from-file");
+    expect(c.llm.apiKey).toBe("machine-token-from-file");
   });
 
   it("prefers an explicit apiKey over apiKeyFile", () => {
@@ -175,7 +208,7 @@ describe("loadConfig local overlay", () => {
     expect(c.llm.apiKey).toBe("");
   });
 
-  it("refuses an apiKeyFile outside the allowed roots (home, cwd) instead of reading it", () => {
+  it("refuses an apiKeyFile outside the home directory instead of reading it", () => {
     const keyFile = path.join(outside, "outside-secret");
     fs.writeFileSync(keyFile, "outside-token");
     process.env.AUTO_CLASSIFIER_LOCAL_CONFIG = writeHome(JSON.stringify({ llm: { apiKeyFile: keyFile } }));
@@ -253,5 +286,56 @@ describe("the working directory never configures the gate", () => {
     const { AUTO_CLASSIFIER_CONFIG, ...env } = process.env;
     const result = Bun.spawnSync([process.execPath, "run", probe], { cwd: repo, env: { ...env, HOME: fs.mkdtempSync(path.join(dir, "home-")) } });
     expect(JSON.parse(result.stdout.toString().trim())).toBeNull();
+  });
+});
+
+// A deployment that ships its own config replaces rules.fastAllow outright,
+// so certifying the package defaults would measure a gate that deployment
+// does not run: a verdict settled by a default fast-allow rule says nothing
+// about a machine whose config has no such rule.
+describe("the configuration the battery certifies", () => {
+  const merge = "gh pr merge 17 --repo octo-org/app --admin --squash";
+  const shipped = (fastAllow: string[], extra: Record<string, unknown> = {}) =>
+    writeFile(JSON.stringify({ rules: { fastAllow }, ...extra }));
+
+  it("judges a command by the shipped config's fast-allow list, not the defaults'", () => {
+    const withoutGh = benchConfig(shipped(["^\\s*forgectl\\s+pr\\s+(?:view|list)\\b"]));
+    expect(evaluateFastRules(merge, withoutGh.rules)?.matched).not.toBe("allow");
+
+    const withGh = benchConfig(shipped(["^\\s*gh\\s+pr\\s+merge\\b"]));
+    expect(evaluateFastRules(merge, withGh.rules)?.matched).toBe("allow");
+  });
+
+  it("keeps the battery's placeholder upload destinations over the shipped ones", () => {
+    const placeholders = loadConfig(BENCH_CONFIG, { overlay: false }).sanctionedRemotes;
+    const c = benchConfig(shipped([], { sanctionedRemotes: ["forge.real.example"] }));
+    expect(c.sanctionedRemotes).toEqual(placeholders);
+    expect(c.jev.sanctionedRemotes).toEqual(placeholders);
+  });
+
+  it("is the package defaults when no config is shipped", () => {
+    expect(benchConfig().rules).toEqual(loadConfig(BENCH_CONFIG, { overlay: false }).rules);
+  });
+
+  it("is what bench/run.ts runs, with --config naming the shipped file", () => {
+    const run = fs.readFileSync(path.join(import.meta.dir, "..", "bench", "run.ts"), "utf-8");
+    expect(run).toContain('flag("--config")');
+    expect(run).toContain("benchConfig(configFile)");
+    expect(run).not.toMatch(/import\s*\{[^}]*\bloadConfig\b/);
+  });
+});
+
+describe("llm.totalTimeoutMs", () => {
+  it("defaults to 18000, under the 20 s agy hook timeout, and reads the file and then the env var", () => {
+    expect(load("{}").llm.totalTimeoutMs).toBe(18000);
+    expect(load(`{ "llm": { "totalTimeoutMs": 9000 } }`).llm.totalTimeoutMs).toBe(9000);
+    const saved = process.env.AUTO_CLASSIFIER_TOTAL_TIMEOUT_MS;
+    process.env.AUTO_CLASSIFIER_TOTAL_TIMEOUT_MS = "7000";
+    try {
+      expect(load(`{ "llm": { "totalTimeoutMs": 9000 } }`).llm.totalTimeoutMs).toBe(7000);
+    } finally {
+      if (saved === undefined) delete process.env.AUTO_CLASSIFIER_TOTAL_TIMEOUT_MS;
+      else process.env.AUTO_CLASSIFIER_TOTAL_TIMEOUT_MS = saved;
+    }
   });
 });

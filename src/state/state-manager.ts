@@ -2,7 +2,19 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { analyzeCommand } from "../rules/command-shape.js";
+import { analyzeCommand, scanRedirects } from "../rules/command-shape.js";
+
+/** `text` with every fd duplication (`2>&1`, `>&2`, glued or spaced) cut out, found by the one redirect scanner. */
+function withoutFdDuplications(text: string): string {
+  let out = "";
+  let at = 0;
+  for (const r of scanRedirects(text)) {
+    if (r.kind !== "fd") continue;
+    out += text.slice(at, r.start) + " ";
+    at = r.end;
+  }
+  return out + text.slice(at);
+}
 
 export interface DenialRecord {
   /** The command exactly as last attempted. */
@@ -14,12 +26,19 @@ export interface DenialRecord {
   timestamp: number;
   /** Denials of this command inside the sliding window. */
   count: number;
-  /** The denial came from an unreachable or unparseable model, not a verdict. */
+  /**
+   * The denial came from a failed model call (every model in the chain
+   * unreachable, timed out or erroring), not a verdict, so a retry asks
+   * again. An unparseable reply sends the classifier on to the next fallback
+   * model; when the chain ends with no reply that parses and at least one that
+   * did not, the fail-closed deny is not transient, and is reused like any
+   * other.
+   */
   transient?: boolean;
 }
 
 export interface AllowRecord {
-  /** normalizeCommand() of the command, plus a content hash when a file was judged with it. */
+  /** The exact command the model allowed (trimmed), plus a hash of everything else it was shown (see `recentAllow`). */
   key: string;
   reason: string;
   timestamp: number;
@@ -43,8 +62,11 @@ export interface DenialTally {
   escalated: boolean;
 }
 
-/** Verbs that only shape output; a trailing pipe into one does not change what a command does. */
-const OUTPUT_SHAPERS = new Set(["head", "tail", "cat", "less", "more", "wc", "tee"]);
+/**
+ * Verbs that only shape output; a trailing pipe into one does not change what
+ * a command does. `tee` is not one: it writes every file it names.
+ */
+const OUTPUT_SHAPERS = new Set(["head", "tail", "cat", "less", "more", "wc"]);
 
 /**
  * Tracks, per session, how many times each command has been denied inside a
@@ -62,10 +84,10 @@ export class StateManager {
   /**
    * @param baseDir where session files live; omitted, it resolves to
    *   $XDG_RUNTIME_DIR/auto-classifier/sessions or ~/.cache/auto-classifier/sessions.
-   *   Tests pass a temp dir so they never touch the box's real store.
+   *   Tests pass a temp dir so they never touch the machine's real store.
    * @param now clock seam for tests.
    */
-  constructor(slidingWindowMs = 300000, consecutiveThreshold = 3, baseDir?: string, now: () => number = Date.now) {
+  constructor(slidingWindowMs = 300000, consecutiveThreshold = 2, baseDir?: string, now: () => number = Date.now) {
     this.slidingWindowMs = slidingWindowMs;
     this.consecutiveThreshold = consecutiveThreshold;
     this.now = now;
@@ -88,7 +110,7 @@ export class StateManager {
       try {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       } catch (err) {
-        console.error(`[auto-classifier] Failed to create state dir ${dir}:`, err);
+        console.error(`[auto-classifier] Warning: failed to create state dir ${dir}:`, err);
       }
     }
   }
@@ -100,15 +122,20 @@ export class StateManager {
 
   /**
    * The key a command's denials are counted under. Two attempts that differ
-   * only in a privilege prefix, whitespace, an fd redirection, or a trailing
-   * `| tail -15` are the same attempt: the agent is retrying, not trying
-   * something else.
+   * only in a privilege prefix, an env assignment, whitespace, an fd
+   * redirection, or a trailing `| tail -15` are the same attempt: the agent is
+   * retrying, not trying something else.
+   *
+   * This key is loose on purpose, and is used for denials only, where loose
+   * is the strict direction: a looser match makes more commands count as a
+   * retry of a denied one. It is never the key of a remembered allow
+   * (`allowKey`), because the forms it folds together do different things:
+   * `make build` and `LD_PRELOAD=/tmp/x.so make build` share it.
    */
   normalizeCommand(cmd: string): string {
     const shape = analyzeCommand(cmd);
     const parts = shape.segments.map((seg) =>
-      seg.stripped
-        .replace(/\s+\d*>&\d+/g, "")
+      withoutFdDuplications(seg.stripped)
         .replace(/\s+/g, " ")
         .trim()
     );
@@ -162,7 +189,7 @@ export class StateManager {
       fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
       fs.renameSync(tmpPath, filePath);
     } catch (err) {
-      console.error(`[auto-classifier] Failed to save session state for ${state.conversationId}:`, err);
+      console.error(`[auto-classifier] Warning: failed to save session state for ${state.conversationId}:`, err);
       try {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
       } catch {}
@@ -210,16 +237,25 @@ export class StateManager {
     return { consecutiveCount: record.count, escalated: record.count >= this.consecutiveThreshold };
   }
 
+  /**
+   * The key a model allow is remembered under: the exact command, trimmed,
+   * never `normalizeCommand`. The model judged the text it was shown, and its
+   * allow says nothing about a command that differs in an env prefix, a
+   * `sudo`, or a trailing pipe (`| sudo tee /etc/sudoers.d/x`). The `exact:`
+   * prefix keeps a record written under the older, normalised key from ever
+   * matching.
+   */
   private allowKey(command: string, contextKey?: string): string {
-    const base = this.normalizeCommand(command);
+    const base = `exact:${command.trim()}`;
     return contextKey ? `${base}#${contextKey}` : base;
   }
 
   /**
-   * A model allow of this command (and, when a file was judged with it, the
-   * same file content) still inside the window. The model only sees the text
-   * it is shown, so the same text gets the same answer; asking again buys
-   * nothing but tokens.
+   * A model allow of exactly this command, with the same `contextKey` (a hash
+   * the caller takes of everything else the model was shown: the working
+   * directory, the facts gathered there, every file attached), still inside
+   * the window. The model only sees the text it is shown, so the same text
+   * gets the same answer; asking again buys nothing but tokens.
    */
   recentAllow(sessionId: string, command: string, contextKey?: string): AllowRecord | undefined {
     const key = this.allowKey(command, contextKey);
@@ -232,15 +268,19 @@ export class StateManager {
    *   Those never touch the counters: an agent must not be able to interleave
    *   `ls` between retries and change what the next retry means.
    * @param opts.reason the model's reason; recorded so a repeat inside the window skips the model.
-   * @param opts.contextKey hash of any file content the verdict depended on.
+   * @param opts.contextKey hash of everything besides the command the verdict was given.
    */
   recordAllow(sessionId: string, command: string, opts: { exploratory?: boolean; reason?: string; contextKey?: string } = {}): void {
     if (opts.exploratory) {
       return;
     }
     const state = this.loadSession(sessionId);
-    const normalized = this.normalizeCommand(command);
-    state.recentDenials = state.recentDenials.filter((r) => r.normalizedCommand !== normalized);
+    // Only an allowed run of this exact command clears its denial count. A
+    // loosely-equal command the model allowed (the same verb without the env
+    // prefix that made it harmful) is a different command, and must not reset
+    // the count of the one that was denied.
+    const exact = command.trim();
+    state.recentDenials = state.recentDenials.filter((r) => r.command.trim() !== exact);
     if (opts.reason !== undefined) {
       const key = this.allowKey(command, opts.contextKey);
       state.recentAllows = state.recentAllows.filter((r) => r.key !== key);

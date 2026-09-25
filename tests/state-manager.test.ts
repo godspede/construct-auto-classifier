@@ -83,6 +83,23 @@ describe("StateManager.normalizeCommand", () => {
   });
 });
 
+describe("StateManager: a remembered allow is the exact command", () => {
+  it("answers only the identical (trimmed) command, never a loosely-equal one", () => {
+    const { m } = manager();
+    const s = sid();
+    m.recordAllow(s, "make build", { reason: "builds" });
+    expect(m.recentAllow(s, "  make build ")?.reason).toBe("builds");
+    expect(m.recentAllow(s, "LD_PRELOAD=/tmp/x.so make build")).toBeUndefined();
+    expect(m.recentAllow(s, "sudo make build")).toBeUndefined();
+    expect(m.recentAllow(s, "make build | tee -a ~/.bashrc")).toBeUndefined();
+  });
+
+  it("tee is not an output shaper, even for denial counting", () => {
+    const { m } = manager();
+    expect(m.normalizeCommand("echo x | tee /etc/sudoers.d/x")).not.toBe(m.normalizeCommand("echo x"));
+  });
+});
+
 describe("heredoc bodies are part of a command's identity", () => {
   it("gives two different heredoc scripts different keys, and a retry of one the same key", () => {
     const { m } = manager();

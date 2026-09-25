@@ -1,6 +1,6 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { appendCapped } from "./capped-append.js";
+import { gateConfigDir } from "./paths.js";
 import type { DecisionOutcome, FileContext, TelemetryConfig } from "./types.js";
 export type { TelemetryConfig };
 
@@ -18,7 +18,17 @@ export interface TelemetryRow {
   file_path: string | null;
   file_snippet: string | null;
   decision: DecisionOutcome["decision"];
-  /** Which stage decided: fast-allow, fast-deny, retry, landed, cache, triage, llm, fallback, error. */
+  /**
+   * Which stage decided: fast-allow, fast-deny, upload, retry, landed, cache,
+   * triage, llm, fallback, truncated, error, or empty for a blank command;
+   * for a file or search tool also secret-deny, protected-deny,
+   * sensitive-escalate, workspace-allow, scratch-allow, read-allow or
+   * search-allow, and for an agy file tool outside-escalate. On agy, an
+   * escalation nobody could be asked about gets a second row saying what
+   * became of it: always-proceed (agy ran it), gate-kept (the gate raised
+   * it, by a rule or with no model reachable, so it was refused) or
+   * no-prompt (refused otherwise).
+   */
   source: string;
   reason: string;
   latency_ms: number;
@@ -44,13 +54,27 @@ export interface TelemetryRow {
    * from and apply that workspace's own policy to it.
    */
   cwd: string | null;
+  /**
+   * The tool this row classified: "bash" for a shell command (on either
+   * harness), "read"/"write"/"edit" for an OpenCode file tool,
+   * "grep"/"glob"/"list" for a search, "patch" for a patch, or agy's own file
+   * tool name ("write_to_file", "replace_file_content",
+   * "multi_replace_file_content"). Null on an agy always-proceed row, which
+   * records no tool, and on rows written before the field existed.
+   */
+  tool: string | null;
 }
+
+/** `writeTelemetry`'s `row.tool` may be omitted by an older caller; it lands as `null`, never `undefined`, so every row on disk carries the field. */
+type TelemetryRowInput = Omit<TelemetryRow, "type" | "ts" | "tool"> & { tool?: string | null };
+
+/** `telemetry.maxBytes` when unset: past 50 MB the file moves to `telemetry.jsonl.1`. */
+export const DEFAULT_TELEMETRY_MAX_BYTES = 50 * 1024 * 1024;
 
 export function telemetryPath(config: TelemetryConfig): string | null {
   if (!config.enabled) return null;
   if (config.path) return config.path;
-  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
-  return path.join(configHome, "auto-classifier", "telemetry.jsonl");
+  return path.join(gateConfigDir(), "telemetry.jsonl");
 }
 
 const REDACT = [
@@ -64,20 +88,20 @@ export function redactForTelemetry(text: string): string {
   return out;
 }
 
-export function writeTelemetry(config: TelemetryConfig, row: Omit<TelemetryRow, "type" | "ts">): void {
+export function writeTelemetry(config: TelemetryConfig, row: TelemetryRowInput): void {
   const p = telemetryPath(config);
   if (!p) return;
   const full: TelemetryRow = {
     type: "classification",
     ts: new Date().toISOString(),
     ...row,
+    tool: row.tool ?? null,
     command: redactForTelemetry(row.command).slice(0, 2000),
     reason: redactForTelemetry(row.reason).slice(0, 500),
     file_snippet: row.file_snippet ? redactForTelemetry(row.file_snippet).slice(0, 400) : null,
   };
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-    fs.appendFileSync(p, JSON.stringify(full) + "\n", { mode: 0o600 });
+    appendCapped(p, JSON.stringify(full) + "\n", config.maxBytes ?? DEFAULT_TELEMETRY_MAX_BYTES);
   } catch {
     // telemetry that cannot be written must never break a verdict
   }

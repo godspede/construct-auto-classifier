@@ -1,5 +1,15 @@
 import { describe, it, expect } from "bun:test";
-import { acceptWhenShown, promptMatches, readPermissionPrompt, type PaneIO } from "../src/adapters/agy-accept.js";
+import {
+  acceptWhenShown,
+  findRejectOption,
+  promptMatches,
+  readPermissionPrompt,
+  watchEscalation,
+  timeoutMessage,
+  recordTimeout,
+  consumeLastTimeout,
+  type PaneIO,
+} from "../src/adapters/agy-accept.js";
 
 const RULE = "─".repeat(120);
 
@@ -66,6 +76,23 @@ describe("promptMatches", () => {
     expect(promptMatches(readPermissionPrompt(screen), "git log --oneline -20 -- src/adapters")).toBe(true);
   });
 
+  it("matches a command truncated on screen with an ellipsis", () => {
+    const full = 'git -c user.name="foo" -c user.email="bar" commit -m "feat: a very long commit message with details"';
+    const truncated = 'git -c user.name="foo" -c user.email="bar" commit -m "feat: a very long commit...';
+    const screen = allowedScreen("x").replace("   x", "   " + truncated);
+    expect(promptMatches(readPermissionPrompt(screen), full)).toBe(true);
+  });
+
+  it("matches a multi-line command with hidden lines", () => {
+    const full = 'git commit -m "fix(parser): handle trailing whitespace in config keys" -m "Trim keys before lookup in ConfigLoaderTests legacy fixture blocks, resolving the test failure." -m "Add docs/config-keys.md describing the accepted key forms to satisfy the docs check." -m "Fixes #42"';
+    const multiline = [
+      '   git commit -m "fix(parser): handle trailing whitespace in config keys"',
+      '   ⋯ (2 lines hidden)',
+    ].join("\n");
+    const screen = allowedScreen("x").replace("   x", multiline);
+    expect(promptMatches(readPermissionPrompt(screen), full)).toBe(true);
+  });
+
   it("never accepts an escalation", () => {
     expect(promptMatches(readPermissionPrompt(escalationScreen), "rm -rf ./data")).toBe(false);
   });
@@ -86,6 +113,7 @@ describe("promptMatches", () => {
 /** A pane whose screen is scripted per capture, recording every key sent. */
 function fakePane(screens: (string | Error)[]) {
   const pressed: string[] = [];
+  const rejected: Array<{ pane: string; stepsDown?: number }> = [];
   let i = 0;
   const io: PaneIO = {
     capture: () => {
@@ -96,14 +124,23 @@ function fakePane(screens: (string | Error)[]) {
     pressEnter: (pane) => {
       pressed.push(pane);
     },
+    rejectPrompt: (pane, stepsDown) => {
+      rejected.push({ pane, stepsDown });
+    },
     sleep: async () => {},
   };
-  return { io, pressed };
+  return { io, pressed, rejected };
 }
 
 describe("acceptWhenShown", () => {
   it("presses Enter once the allowed command's prompt appears", async () => {
     const { io, pressed } = fakePane(["> ", "> ", allowedScreen("ls")]);
+    expect(await acceptWhenShown("%3", "ls", io, 1000, 100)).toBe("accepted");
+    expect(pressed).toEqual(["%3"]);
+  });
+
+  it("recovers from a transient redraw blink on the second read", async () => {
+    const { io, pressed } = fakePane([allowedScreen("ls"), "> ", allowedScreen("ls"), allowedScreen("ls")]);
     expect(await acceptWhenShown("%3", "ls", io, 1000, 100)).toBe("accepted");
     expect(pressed).toEqual(["%3"]);
   });
@@ -130,5 +167,84 @@ describe("acceptWhenShown", () => {
     const { io, pressed } = fakePane([new Error("no server running")]);
     expect(await acceptWhenShown("%3", "ls", io, 1000, 100)).toBe("error");
     expect(pressed).toEqual([]);
+  });
+});
+
+describe("findRejectOption", () => {
+  it("finds the No option in a 4-option command prompt", () => {
+    expect(findRejectOption(allowedScreen("ls"))).toEqual({ stepsDown: 3 });
+  });
+
+  it("finds the No option in an escalation prompt", () => {
+    expect(findRejectOption(escalationScreen)).toEqual({ stepsDown: 1 });
+  });
+
+  it("returns null when no question is present", () => {
+    expect(findRejectOption("no prompt here")).toBeNull();
+  });
+});
+
+describe("watchEscalation", () => {
+  it("auto-denies the prompt when timeout expires", async () => {
+    const { io, rejected } = fakePane([escalationScreen]);
+    const res = await watchEscalation("%1", { kind: "command", command: "rm -rf ./data" }, 200, "test-sess", io, 50, 500);
+    expect(res).toBe("timed-out");
+    expect(rejected).toEqual([{ pane: "%1", stepsDown: 1 }]);
+
+    const record = consumeLastTimeout("test-sess");
+    expect(record).not.toBeNull();
+    expect(record?.target).toEqual({ kind: "command", command: "rm -rf ./data" });
+  });
+
+  it("returns answered if prompt disappears before timeout", async () => {
+    const { io, rejected } = fakePane([escalationScreen, "> "]);
+    const res = await watchEscalation("%1", { kind: "command", command: "rm -rf ./data" }, 1000, "test-sess", io, 50, 500);
+    expect(res).toBe("answered");
+    expect(rejected).toEqual([]);
+  });
+
+  it("finds and declines an escalation whose command agy cut short on screen", async () => {
+    const full = 'git -c user.name="foo" -c user.email="bar" commit -m "feat: a very long commit message with details"';
+    const truncated = 'git -c user.name="foo" -c user.email="bar" commit -m "feat: a very long commit...';
+    const screen = escalationScreen.replace("   rm -rf ./data", "   " + truncated);
+    const { io, rejected } = fakePane([screen]);
+    const res = await watchEscalation("%1", { kind: "command", command: full }, 200, "trunc-sess", io, 50, 500);
+    expect(res).toBe("timed-out");
+    expect(rejected.length).toBe(1);
+    consumeLastTimeout("trunc-sess");
+  });
+
+  it("does not decline a prompt for a different command that only shares a short prefix", async () => {
+    const screen = escalationScreen.replace("   rm -rf ./data", "   rm -rf ./d...");
+    const { io, rejected } = fakePane([screen]);
+    const res = await watchEscalation("%1", { kind: "command", command: "rm -rf ./data" }, 200, "short-sess", io, 50, 200);
+    expect(res).toBe("not-shown");
+    expect(rejected).toEqual([]);
+  });
+
+  it("returns not-shown if prompt never appears", async () => {
+    const { io, rejected } = fakePane(["> "]);
+    const res = await watchEscalation("%1", { kind: "command", command: "rm -rf ./data" }, 1000, "test-sess", io, 50, 200);
+    expect(res).toBe("not-shown");
+    expect(rejected).toEqual([]);
+  });
+});
+
+
+describe("timeoutMessage", () => {
+  it("tells the agent to set the step aside, not to work around it", () => {
+    const msg = timeoutMessage({ kind: "command", command: "sudo systemctl restart x" }, 5);
+    expect(msg).toContain("sudo systemctl restart x");
+    expect(msg).toContain("5 minutes");
+    expect(msg).toContain("did not answer");
+    expect(msg).toContain("Do NOT try to achieve this step another way");
+    expect(msg).toContain("rephrase");
+    expect(msg).toContain("continue any other work that does not depend on it");
+    expect(msg).toContain("final report");
+    expect(msg).not.toMatch(/safe alternative|find a way/i);
+  });
+
+  it("names a file write by its path", () => {
+    expect(timeoutMessage({ kind: "file", path: "/etc/hosts" }, 5)).toContain("`/etc/hosts`");
   });
 });

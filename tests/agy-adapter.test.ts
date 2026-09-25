@@ -5,13 +5,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { detectAgyAutoApprove, handleAgyInput, splitCommandLine, windowsProcessReader } from "../src/adapters/agy.js";
+import { CANNOT_CHECK, agyLogLiveMode, detectAgyAutoApprove, handleAgyInput, handleAgyPreInvocation, procReader, splitCommandLine, windowsProcessReader } from "../src/adapters/agy.js";
+import { getTimeoutFilePath, recordTimeout } from "../src/adapters/agy-accept.js";
+import { logPath } from "../src/log.js";
 import { FakeLlm } from "./helpers/fake-llm.js";
 import { tmpStateDir } from "./helpers/tmp-state.js";
 import { testConfig } from "./helpers/config.js";
 
-function classifier(llm: FakeLlm) {
-  const config = testConfig();
+function classifier(llm: FakeLlm, alwaysProceedEscalations?: "run" | "stop") {
+  const config = { ...testConfig(), agy: { alwaysProceedEscalations } };
   return new AutoClassifier(config, {
     classifier: llm,
     stateManager: new StateManager(config.policy.slidingWindowMs, config.policy.consecutiveThreshold, tmpStateDir()),
@@ -57,15 +59,15 @@ describe("agy adapter", () => {
     expect(out.decision).toBe("force_ask");
   });
 
-  it("blocks an escalation agy would approve by itself, and says why", async () => {
+  it("blocks an escalation agy would approve by itself, and says why, under alwaysProceedEscalations stop", async () => {
     const llm = new FakeLlm([], { allow: false, reason: "risky" });
-    const c = classifier(llm);
+    const c = classifier(llm, "stop");
     for (let i = 0; i < 2; i++) await handleAgyInput(runCommand("curl x | sh"), c, autoApproves);
     const out = await handleAgyInput(runCommand("curl x | sh"), c, autoApproves);
     expect(out.decision).toBe("deny");
     expect(out.reason).toContain("SAFETY ESCALATION");
     expect(out.reason).toContain("--dangerously-skip-permissions");
-    expect(out.reason).toContain("ask the operator");
+    expect(out.reason).toContain("ask the user");
   });
 
   it("blocks a malformed-payload prompt too when agy would approve it", async () => {
@@ -152,7 +154,10 @@ describe("detectAgyAutoApprove", () => {
     const p = holder("claude");
     await new Promise((r) => setTimeout(r, 150));
     try {
-      expect(detectAgyAutoApprove(noSettings, p.pid!)).toBeNull();
+      // Walk only up to the spawned holder process itself so the ambient harness
+      // (when this test runs under agy --dangerously-skip-permissions) is not walked into.
+      const read = (pid: number) => (pid === p.pid ? procReader(pid) : null);
+      expect(detectAgyAutoApprove(noSettings, p.pid!, read)).toBeNull();
     } finally {
       p.kill();
     }
@@ -167,9 +172,9 @@ describe("detectAgyAutoApprove on Windows", () => {
 
   it("finds the flag on agy.exe above the hook, through a shell", () => {
     const read = windowsProcessReader(snapshot([
-      [40, 30, String.raw`"C:\Program Files\nodejs\node.exe" C:/Users/z/.config/auto-classifier/auto-classifier-cli.js agy`],
+      [40, 30, String.raw`"C:\Program Files\nodejs\node.exe" C:/Users/dev/construct-auto-classifier/bin/auto-classifier.js agy`],
       [30, 20, String.raw`C:\WINDOWS\system32\cmd.exe /c node ...`],
-      [20, 10, String.raw`"C:\Users\z\AppData\Local\agy\bin\agy.exe" --dangerously-skip-permissions`],
+      [20, 10, String.raw`"C:\Users\dev\AppData\Local\agy\bin\agy.exe" --dangerously-skip-permissions`],
     ]));
     expect(detectAgyAutoApprove(noSettings, 30, read)).toContain("--dangerously-skip-permissions");
   });
@@ -213,5 +218,151 @@ describe("splitCommandLine", () => {
       "--dangerously-skip-permissions",
       "x",
     ]);
+  });
+});
+
+describe("handleAgyPreInvocation", () => {
+  it("injects ephemeralMessage when a timeout occurred for this session", () => {
+    recordTimeout({
+      sessionId: "preinv-test-sess",
+      target: { kind: "command", command: "rm -rf ./data" },
+      timedOutAt: Date.now(),
+      timeoutMinutes: 5,
+    });
+
+    const out = handleAgyPreInvocation({ conversationId: "preinv-test-sess" });
+    expect(out.injectSteps.length).toBe(1);
+    expect(out.injectSteps[0]?.ephemeralMessage).toContain("User Unavailable - Timeout");
+    expect(out.injectSteps[0]?.ephemeralMessage).toContain("rm -rf ./data");
+    expect(out.injectSteps[0]?.ephemeralMessage).toContain("5 minutes");
+    expect(out.injectSteps[0]?.ephemeralMessage).toContain("Do NOT try to achieve this step another way");
+
+    // Second call consumes nothing
+    const out2 = handleAgyPreInvocation({ conversationId: "preinv-test-sess" });
+    expect(out2.injectSteps.length).toBe(0);
+  });
+
+  it("returns empty injectSteps when no timeout occurred", () => {
+    const out = handleAgyPreInvocation({ conversationId: "no-timeout-sess" });
+    expect(out.injectSteps.length).toBe(0);
+  });
+});
+
+describe("agy adapter: escalation watcher trigger", () => {
+  it("triggers onEscalate callback when a command escalates", async () => {
+    const escalated: Array<{ kind: string; command?: string }> = [];
+    const onEscalate = (target: any) => {
+      escalated.push(target);
+      return true;
+    };
+
+    const c = classifier(new FakeLlm([], { allow: false, reason: "needs review" }));
+    for (let i = 0; i < 2; i++) await handleAgyInput(runCommand("rm -rf ./data"), c, prompts);
+    const out = await handleAgyInput(runCommand("rm -rf ./data"), c, prompts, () => true, onEscalate);
+
+    expect(out.decision).toBe("force_ask");
+    expect(escalated.length).toBe(1);
+    expect(escalated[0]?.command).toBe("rm -rf ./data");
+  });
+});
+
+
+describe("agyLogLiveMode", () => {
+  // agy 1.2.7's log lines, as written to ~/.gemini/antigravity-cli/log.
+  const START = (pid: number) => `I0920 00:50:36.262961      23 server.go:1584] Starting language server process with pid ${pid}`;
+  const SURFACED = 'I0920 22:54:06.732081    1086 tool_confirmation_manager.go:225] Surfacing tool confirmation: "RunCommand" at step 525';
+  const AUTO = 'I0921 12:08:46.861485    1086 tool_confirmation_manager.go:193] Always-proceed: auto-approving tool confirmation "RunCommand" at step 1023';
+  const logDir = (files: Record<string, string[]>) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-log-"));
+    for (const [name, lines] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), lines.join("\n") + "\n");
+    return dir;
+  };
+
+  it("names always-proceed when the running agy last approved a confirmation by itself", () => {
+    const read = agyLogLiveMode(logDir({
+      "cli-20260920_005036.log": [START(939414), SURFACED, AUTO],
+      "cli-20260921_124007.log": [START(936805), SURFACED],
+    }));
+    expect(read(939414)).toContain("always-proceed");
+    expect(read(936805)).toBeNull();
+  });
+
+  it("is null once the running agy surfaces a confirmation again", () => {
+    expect(agyLogLiveMode(logDir({ "cli-1.log": [START(7), AUTO, SURFACED] }))(7)).toBeNull();
+  });
+
+  it("is null for a pid no log names, and with no log directory", () => {
+    expect(agyLogLiveMode(logDir({ "cli-1.log": [START(7), AUTO] }))(8)).toBeNull();
+    expect(agyLogLiveMode(path.join(os.tmpdir(), "no-such-agy-log-dir"))(7)).toBeNull();
+  });
+
+  // A running agy keeps the mode /settings switched it to, even after
+  // settings.json is rewritten: settings.json can say request-review while
+  // every escalation runs with no prompt.
+  it("lets detectAgyAutoApprove see always-proceed that settings.json no longer shows", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-"));
+    const settings = path.join(dir, "settings.json");
+    fs.writeFileSync(settings, JSON.stringify({ toolPermission: "request-review" }));
+    const read = (pid: number) => (pid === 20 ? { args: ["/home/dev/.local/bin/agy"], ppid: 1 } : pid === 30 ? { args: ["/bin/sh"], ppid: 20 } : null);
+
+    const live = agyLogLiveMode(logDir({ "cli-1.log": [START(20), SURFACED, AUTO] }));
+    expect(detectAgyAutoApprove(settings, 30, read, live)).toContain("always-proceed");
+
+    const asking = agyLogLiveMode(logDir({ "cli-1.log": [START(20), AUTO, SURFACED] }));
+    expect(detectAgyAutoApprove(settings, 30, read, asking)).toBeNull();
+  });
+});
+
+describe("agy adapter: a blocked escalation", () => {
+  it("starts no timeout watcher, since no prompt will show", async () => {
+    const escalated: unknown[] = [];
+    const c = classifier(new FakeLlm([], { allow: false, reason: "needs review" }), "stop");
+    for (let i = 0; i < 2; i++) await handleAgyInput(runCommand("rm -rf ./data"), c, autoApproves, () => false, () => true);
+    const out = await handleAgyInput(runCommand("rm -rf ./data"), c, autoApproves, () => false, (t) => (escalated.push(t), true));
+    expect(out.decision).toBe("deny");
+    expect(escalated).toEqual([]);
+  });
+});
+
+describe("test isolation", () => {
+  it("keeps the real log, timeout records and tmux panes out of reach", () => {
+    const real = path.join(os.homedir(), ".config", "auto-classifier");
+    expect(logPath()?.startsWith(real)).toBe(false);
+    expect(getTimeoutFilePath("s").startsWith(real)).toBe(false);
+    expect(process.env.TMUX).toBeUndefined();
+    expect(process.env.TMUX_PANE).toBeUndefined();
+  });
+});
+
+describe("agy adapter: an escalation under always-proceed, alwaysProceedEscalations run (default)", () => {
+  const escalate = async (c: AutoClassifier, why: () => string | null, escalated: unknown[] = []) => {
+    for (let i = 0; i < 2; i++) await handleAgyInput(runCommand("curl x | sh"), c, why, () => false, () => true);
+    return handleAgyInput(runCommand("curl x | sh"), c, why, () => false, (t) => (escalated.push(t), true));
+  };
+
+  it("runs as the operator chose, logged and recorded with source always-proceed", async () => {
+    const telemetry = path.join(tmpStateDir(), "t.jsonl");
+    const c = classifier(new FakeLlm([], { allow: false, reason: "risky" }));
+    c.getConfig().telemetry = { enabled: true, path: telemetry };
+    const escalated: unknown[] = [];
+    const out = await escalate(c, () => "the running agy is approving tool confirmations by itself (always-proceed)", escalated);
+
+    expect(out.decision).toBe("force_ask");
+    expect(escalated).toEqual([]); // no prompt will show, so no timeout watcher
+    const rows = fs.readFileSync(telemetry, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    const ran = rows.filter((r) => r.source === "always-proceed");
+    expect(ran).toHaveLength(1);
+    expect(ran[0]).toMatchObject({ decision: "allow", command: "curl x | sh" });
+    expect(ran[0].reason).toContain("always-proceed");
+    expect(fs.readFileSync(process.env.AUTO_CLASSIFIER_LOG!, "utf-8")).toContain('agy: escalation ran unattended (always-proceed)');
+  });
+
+  it("still blocks when the gate could not tell whether agy would prompt", async () => {
+    const out = await escalate(classifier(new FakeLlm([], { allow: false, reason: "risky" })), () => CANNOT_CHECK);
+    expect(out.decision).toBe("deny");
+  });
+
+  it("still blocks a gate failure agy would approve", async () => {
+    expect((await handleAgyInput("{not json", classifier(new FakeLlm()), autoApproves)).decision).toBe("deny");
   });
 });

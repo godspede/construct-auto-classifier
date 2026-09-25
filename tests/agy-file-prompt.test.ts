@@ -5,9 +5,9 @@ import { acceptWhenShown, filePromptMatches, readFilePrompt, type PaneIO } from 
 
 // Screens captured from agy 1.2.7 on Windows (psmux), trimmed of blank lines.
 const RULE = "─".repeat(120);
-const creationScreen = (path = String.raw`D:\tmp\gate-test\outrider-probe.txt`, selected = 1) =>
+const creationScreen = (path = String.raw`D:\tmp\gate-test\gate-probe.txt`, selected = 1) =>
   [
-    "● Create(D:/tmp/gate-test/outrider-probe.txt) (ctrl+o to expand)",
+    "● Create(D:/tmp/gate-test/gate-probe.txt) (ctrl+o to expand)",
     "Create file",
     RULE,
     `${path}  +1`,
@@ -50,7 +50,7 @@ describe("readFilePrompt", () => {
   });
   it("reads agy's creation prompt", () => {
     expect(readFilePrompt(creationScreen())).toEqual({
-      path: String.raw`D:\tmp\gate-test\outrider-probe.txt`,
+      path: String.raw`D:\tmp\gate-test\gate-probe.txt`,
       yesSelected: true,
       hasReason: false,
     });
@@ -76,7 +76,7 @@ describe("readFilePrompt", () => {
 describe("filePromptMatches", () => {
   it("matches agy's TargetFile against the displayed path, separators and case aside on Windows", () => {
     const p = readFilePrompt(creationScreen());
-    expect(filePromptMatches(p, "D:/tmp/gate-test/outrider-probe.txt")).toBe(true);
+    expect(filePromptMatches(p, "D:/tmp/gate-test/gate-probe.txt")).toBe(true);
     expect(filePromptMatches(p, "D:/tmp/gate-test/other.txt")).toBe(false);
   });
   it("never matches an escalation", () => {
@@ -87,7 +87,7 @@ describe("filePromptMatches", () => {
 describe("acceptWhenShown for a file", () => {
   it("presses Enter on the allowed file's prompt", async () => {
     const { io, pressed } = fakePane(["> ", creationScreen()]);
-    expect(await acceptWhenShown("%3", { kind: "file", path: "D:/tmp/gate-test/outrider-probe.txt" }, io, 1000, 100)).toBe("accepted");
+    expect(await acceptWhenShown("%3", { kind: "file", path: "D:/tmp/gate-test/gate-probe.txt" }, io, 1000, 100)).toBe("accepted");
     expect(pressed).toEqual(["%3"]);
   });
   it("sends nothing for another file's prompt", async () => {

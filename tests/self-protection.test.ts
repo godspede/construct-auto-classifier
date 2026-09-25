@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { analyzeCommand } from "../src/rules/command-shape.js";
-import { isProtectedEnvOverride, isProtectedPath, selfProtectionDenial } from "../src/rules/self-protection.js";
+import { isProtectedEnvOverride, isProtectedPath, isSecretPath, isSecretSearchScope, selfProtectionDenial } from "../src/rules/self-protection.js";
 
 const denial = (cmd: string) => selfProtectionDenial(analyzeCommand(cmd));
 
@@ -27,6 +27,46 @@ describe("isProtectedPath", () => {
     expect(isProtectedPath("~/.config/opencode/plugins/session-logger.js")).toBe(false);
     expect(isProtectedPath("~/.config/opencode/opencode.json")).toBe(false);
     expect(isProtectedPath("~/src/dotfiles/auto-classifier/config.jsonc")).toBe(false);
+  });
+});
+
+describe("isSecretPath", () => {
+  it("matches the same credential-looking paths a fast-allowed cat cannot vouch for", () => {
+    for (const p of ["~/.ssh/id_ed25519", "/home/dev/.ssh/authorized_keys", "~/.config/opencode/auth.json", "/etc/shadow", "~/.aws/credentials"]) {
+      expect(isSecretPath(p)).toBe(true);
+    }
+  });
+
+  it("leaves an ordinary path alone", () => {
+    for (const p of ["/etc/os-release", "~/repo/src/index.ts", "/tmp/scratch.txt"]) {
+      expect(isSecretPath(p)).toBe(false);
+    }
+  });
+});
+
+describe("isSecretSearchScope", () => {
+  it("flags a directory-scoped search into a SECRET_PATH directory, not just an exact filename", () => {
+    expect(isSecretSearchScope("~/.ssh")).toBe(true);
+    expect(isSecretSearchScope("~/.gnupg")).toBe(true);
+  });
+
+  it("flags an auth-store directory a single-filename SECRET_PATH match cannot see", () => {
+    // A plain read of ~/.config/opencode/theme.json is not itself a
+    // credential exposure (isSecretPath alone leaves it alone); scoping a
+    // recursive grep/glob/list AT the directory would surface auth.json
+    // regardless, so the search-scope check is broader on purpose.
+    expect(isSecretPath("~/.config/opencode")).toBe(false);
+    expect(isSecretSearchScope("~/.config/opencode")).toBe(true);
+    expect(isSecretSearchScope("~/.config/gh")).toBe(true);
+    expect(isSecretSearchScope("~/.config/tea")).toBe(true);
+    expect(isSecretSearchScope("~/.config/glab-cli")).toBe(true);
+    expect(isSecretSearchScope("~/.config/acme-forge")).toBe(true);
+  });
+
+  it("leaves an ordinary directory alone", () => {
+    for (const p of ["/work/src", "~/repo", "/tmp"]) {
+      expect(isSecretSearchScope(p)).toBe(false);
+    }
   });
 });
 

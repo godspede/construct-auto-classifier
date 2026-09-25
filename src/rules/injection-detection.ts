@@ -15,7 +15,7 @@
  * to judge fires the same way regardless of model or provider.
  *
  * These patterns catch the common shapes, not every phrasing -- a missed
- * attempt still gets the classifier's ordinary effect-based judgment; it
+ * attempt still gets the classifier's ordinary effect-based judgement; it
  * just isn't flagged.
  */
 const INJECTION_PATTERNS: RegExp[] = [

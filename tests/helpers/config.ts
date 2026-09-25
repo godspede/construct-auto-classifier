@@ -1,8 +1,9 @@
 import type { AppConfig } from "../../src/types.js";
 
-/** A config literal, never loadConfig(): the box's own ~/.config must not leak into a test. */
+/** A config literal, never loadConfig(): the machine's own ~/.config must not leak into a test. */
 export function testConfig(overrides: Partial<AppConfig["policy"]> = {}, rules: Partial<AppConfig["rules"]> = {}): AppConfig {
   return {
+    sanctionedRemotes: [],
     llm: { baseUrl: "http://127.0.0.1:9/v1", model: "fake", timeoutMs: 100 },
     jev: { baseUrl: "http://127.0.0.1:9", model: "jev-fake", timeoutMs: 100 },
     policy: {

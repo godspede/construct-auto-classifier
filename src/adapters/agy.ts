@@ -4,8 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AutoClassifier } from "../index.js";
 import { log } from "../log.js";
-import { startAcceptWatcher, type AcceptTarget } from "./agy-accept.js";
-import { judgeFileWrite } from "../rules/file-write.js";
+import { writeTelemetry } from "../telemetry.js";
+import { startAcceptWatcher, startEscalationWatcher, consumeLastTimeout, timeoutMessage, type AcceptTarget } from "./agy-accept.js";
+import { judgeFileWrite, type FileWriteVerdict } from "../rules/file-write.js";
+import { detectInjectionAttempt } from "../rules/injection-detection.js";
 import type { AgyPreToolUseInput, AgyPreToolUseOutput } from "../types.js";
 
 /** One process as the auto-approve walk sees it. */
@@ -79,6 +81,67 @@ function defaultProcessReader(): ProcessReader {
 }
 
 /**
+ * Why the running agy with this pid is answering tool confirmations by itself,
+ * or null when nothing says so.
+ */
+export type LiveModeReader = (agyPid: number) => string | null;
+
+const LOG_PID = /Starting language server process with pid (\d+)\b/;
+const CONFIRMATION = /(Always-proceed: auto-approving|Surfacing) tool confirmation/g;
+
+/**
+ * Reads agy's own log for the running process. settings.json is only what the
+ * next agy will start with: a toolPermission changed in /settings lives on in
+ * the running process after the file is rewritten (an installer resetting it
+ * to request-review, say), and that process approves a `force_ask` with no
+ * prompt at all. Its log says which way it answered the last confirmation it
+ * was asked: "Always-proceed: auto-approving tool confirmation" or
+ * "Surfacing tool confirmation". The file for a process is the one whose
+ * first line names its pid.
+ */
+export function agyLogLiveMode(
+  logDir = path.join(process.env.HOME || os.homedir(), ".gemini", "antigravity-cli", "log"),
+  tailBytes = 1024 * 1024
+): LiveModeReader {
+  return (agyPid) => {
+    let names: string[];
+    try {
+      names = fs.readdirSync(logDir).filter((n) => /^cli-.*\.log$/.test(n)).sort().reverse();
+    } catch {
+      return null;
+    }
+    for (const name of names.slice(0, 200)) {
+      const file = path.join(logDir, name);
+      let fd: number | undefined;
+      try {
+        fd = fs.openSync(file, "r");
+        const head = Buffer.alloc(4096);
+        const headLen = fs.readSync(fd, head, 0, head.length, 0);
+        const pid = LOG_PID.exec(head.toString("utf-8", 0, headLen));
+        if (!pid || Number(pid[1]) !== agyPid) continue;
+
+        const size = fs.fstatSync(fd).size;
+        const start = Math.max(0, size - tailBytes);
+        const tail = Buffer.alloc(size - start);
+        fs.readSync(fd, tail, 0, tail.length, start);
+        const last = [...tail.toString("utf-8").matchAll(CONFIRMATION)].pop();
+        return last?.[1] === "Surfacing" || !last
+          ? null
+          : `the running agy is approving tool confirmations by itself (always-proceed, whatever settings.json says now; ${file})`;
+      } catch {
+        continue;
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+      }
+    }
+    return null;
+  };
+}
+
+/** detectAgyAutoApprove's answer when it cannot tell: never treated as the operator's choice. */
+export const CANNOT_CHECK = "the gate could not check whether agy was started with --dangerously-skip-permissions";
+
+/**
  * Why agy would approve a hook's `ask`/`force_ask` by itself, or null when a
  * prompt would reach the operator. Both of agy's auto-approve switches answer
  * a hook's escalation too, so under either one an escalation is only safe as
@@ -89,13 +152,17 @@ function defaultProcessReader(): ProcessReader {
  *    logged or returned. If the process table cannot be read at all, that is
  *    reported as a reason too: an escalation the gate cannot prove will reach
  *    the operator is refused rather than risked.
+ *  - always-proceed in the running agy, read from its own log
+ *    (`agyLogLiveMode`), which settings.json stops describing once it is
+ *    rewritten under a running agy.
  *  - `"toolPermission": "always-proceed"` in agy's settings.json. A missing
  *    key is agy's default, which asks.
  */
 export function detectAgyAutoApprove(
   settingsPath = path.join(process.env.HOME || os.homedir(), ".gemini", "antigravity-cli", "settings.json"),
   startPid = process.ppid,
-  readProcess: ProcessReader = defaultProcessReader()
+  readProcess: ProcessReader = defaultProcessReader(),
+  readLiveMode: LiveModeReader = agyLogLiveMode()
 ): string | null {
   let pid = startPid;
   for (let depth = 0; depth < 8 && pid > 1; depth++) {
@@ -104,7 +171,7 @@ export function detectAgyAutoApprove(
       entry = readProcess(pid);
     } catch (err) {
       log(`agy: could not read the process table: ${(err as Error).message}`);
-      return "the gate could not check whether agy was started with --dangerously-skip-permissions";
+      return CANNOT_CHECK;
     }
     if (!entry) break;
     // Only agy's own flag counts; any other ancestor (another harness this
@@ -113,6 +180,8 @@ export function detectAgyAutoApprove(
       if (entry.args.includes("--dangerously-skip-permissions")) {
         return "agy was started with --dangerously-skip-permissions";
       }
+      const live = readLiveMode(pid);
+      if (live) return live;
       break;
     }
     pid = entry.ppid;
@@ -137,26 +206,105 @@ export async function handleAgyInput(
   rawInput: string,
   classifier: AutoClassifier,
   autoApprove: () => string | null = detectAgyAutoApprove,
-  onAllow: (target: string | AcceptTarget) => boolean = (target) => watchForPrompt(classifier, target)
+  onAllow: (target: string | AcceptTarget) => boolean = (target) => watchForPrompt(classifier, target),
+  onEscalate: (target: AcceptTarget, sessionId?: string) => boolean = (target, sid) => watchForEscalation(classifier, target, sid)
 ): Promise<AgyPreToolUseOutput> {
-  const out = await decide(rawInput, classifier, onAllow);
+  // The timeout watcher starts only once the prompt is known to reach the
+  // operator: a blocked escalation has no prompt to watch.
+  let escalation: [AcceptTarget, string | undefined] | null = null;
+  let byGate = false;
+  const out = await decide(rawInput, classifier, onAllow, (target, sid, gateRaised) => {
+    escalation = [target, sid];
+    byGate = gateRaised === true;
+    return true;
+  });
   if (out.decision !== "ask" && out.decision !== "force_ask") {
     return out;
   }
+  const esc = escalation as [AcceptTarget, string | undefined] | null;
+  const config = classifier.getConfig();
+  // Nobody is at the keyboard, so no escalation can be answered.
+  if (config.policy.headless) {
+    log(`agy: escalation blocked, headless`);
+    if (esc) recordUnprompted(classifier, esc, byGate ? "gate-kept" : "no-prompt", `refused, headless: ${out.reason ?? ""}`);
+    return {
+      decision: "deny",
+      reason:
+        `${out.reason ?? "The safety classifier needs the user's decision."}\n` +
+        `Blocked: this session is headless, so nobody can answer a prompt here. Stop, and report to the user that this needs their decision.`,
+    };
+  }
   const why = autoApprove();
   if (!why) {
+    if (esc) onEscalate(...esc);
     return out;
   }
-  // agy would answer this prompt itself, turning an escalation into an
-  // approval. Block it, and say why.
+  // agy will answer this prompt itself. For an escalation the model raised
+  // that is the operator's standing choice (always-proceed, or the flag)
+  // unless `agy.alwaysProceedEscalations` is "stop": it runs, and says so in
+  // the log and telemetry. A gate failure, or a process table the gate could
+  // not read, is never taken as that choice, and neither is an escalation the
+  // gate raised (a rule's refusal, an escalated file write, a script cut
+  // short, or a model that could not be reached): it exists only for a
+  // person to decide.
+  if (byGate && esc) {
+    log(`agy: gate-raised escalation refused, no prompt: ${why}`);
+    recordUnprompted(classifier, esc, "gate-kept", `refused, no prompt: ${why}. ${out.reason ?? ""}`);
+    return {
+      decision: "deny",
+      reason:
+        `${out.reason ?? "The safety classifier needs the user's decision."}\n` +
+        `Blocked: the gate itself raised this for the user to decide, not a model's judgement (a rule's refusal, an escalated file write, a script cut short before the model saw it whole, or a model that could not be reached), but ${why}, so a prompt here would approve it without them. ` +
+        `Stop, and ask the user to decide on this.`,
+    };
+  }
+  if (esc && why !== CANNOT_CHECK && (config.agy?.alwaysProceedEscalations ?? "run") === "run") {
+    const [target, sid] = esc;
+    const what = target.kind === "file" ? `file ${target.path}` : target.command;
+    log(`agy: escalation ran unattended (always-proceed): ${why}: "${what.slice(0, 120).replace(/\n/g, " ")}"`);
+    recordUnprompted(classifier, esc, "always-proceed", `escalation approved by agy itself, no prompt: ${why}. ${out.reason ?? ""}`, "allow");
+    return out;
+  }
+  // Block it, and say why.
   log(`agy: escalation blocked, not prompted: ${why}`);
+  if (esc) recordUnprompted(classifier, esc, "no-prompt", `refused, no prompt: ${why}. ${out.reason ?? ""}`);
   return {
     decision: "deny",
     reason:
-      `${out.reason ?? "The safety classifier needs the operator's decision."}\n` +
-      `Blocked: this needs the operator's approval, and ${why}, so a prompt here would approve it without them. ` +
-      `Stop, and ask the operator to decide on this.`,
+      `${out.reason ?? "The safety classifier needs the user's decision."}\n` +
+      `Blocked: this needs the user's approval, and ${why}, so a prompt here would approve it without them. ` +
+      `Stop, and ask the user to decide on this.`,
   };
+}
+
+/**
+ * The telemetry row for what became of an escalation that never reached a
+ * prompt: run by agy itself (`always-proceed`), or refused instead (one the
+ * gate raised, `gate-kept`; any other, `no-prompt`). The classifier's own
+ * row for the call still says `force_ask`.
+ */
+function recordUnprompted(
+  classifier: AutoClassifier,
+  [target, sid]: [AcceptTarget, string | undefined],
+  source: "always-proceed" | "gate-kept" | "no-prompt",
+  reason: string,
+  decision: "allow" | "deny" = "deny"
+): void {
+  writeTelemetry(classifier.getConfig().telemetry, {
+    id: "",
+    session: sid ?? "",
+    command: target.kind === "command" ? target.command.trim() : "",
+    file_path: target.kind === "file" ? target.path : null,
+    file_snippet: null,
+    decision,
+    source,
+    reason: reason.trim(),
+    latency_ms: 0,
+    model: null,
+    injection_attempt: false,
+    injection_pattern: null,
+    cwd: null,
+  });
 }
 
 /**
@@ -173,13 +321,37 @@ function watchForPrompt(classifier: AutoClassifier, target: string | AcceptTarge
   return true;
 }
 
+/**
+ * Start the watcher that auto-denies agy's prompt after the escalation timeout
+ * if the operator does not respond.
+ */
+function watchForEscalation(classifier: AutoClassifier, target: AcceptTarget, sessionId?: string): boolean {
+  const pane = process.env.TMUX_PANE;
+  if (!pane || !process.env.TMUX) {
+    return false;
+  }
+  const timeoutMinutes = classifier.getConfig().policy.escalationTimeoutMinutes ?? 5;
+  startEscalationWatcher(pane, target, timeoutMinutes, sessionId);
+  return true;
+}
+
+/** The stage a file-write verdict came from, as telemetry names it. */
+function fileVerdictSource(verdict: FileWriteVerdict): string {
+  if (verdict.decision === "allow") return "workspace-allow";
+  if (verdict.decision === "deny") return "protected-deny";
+  // judgeFileWrite escalates for two reasons: the write lands outside every
+  // workspace (or names no file), or it lands in a sensitive place inside one.
+  return /outside the session's workspace|named no target file/.test(verdict.reason) ? "outside-escalate" : "sensitive-escalate";
+}
+
 /** agy's tools that write a file (TargetFile in their args). */
 export const FILE_TOOLS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content"]);
 
 async function decide(
   rawInput: string,
   classifier: AutoClassifier,
-  onAllow: (target: string | AcceptTarget) => boolean
+  onAllow: (target: string | AcceptTarget) => boolean,
+  onEscalate: (target: AcceptTarget, sessionId?: string, byGate?: boolean) => boolean
 ): Promise<AgyPreToolUseOutput> {
   const trimmed = rawInput.trim();
   if (!trimmed) {
@@ -208,10 +380,33 @@ async function decide(
   if (FILE_TOOLS.has(toolName)) {
     const target = typeof input.toolCall?.args?.TargetFile === "string" ? input.toolCall.args.TargetFile : "";
     const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths.filter((w): w is string => typeof w === "string") : [];
+    const started = Date.now();
     const verdict = judgeFileWrite(target, workspaces);
     log(`agy: ${verdict.decision} ${toolName} ${target}`);
+    const label = `${toolName} ${target}`;
+    const injectionPattern = detectInjectionAttempt(label);
+    writeTelemetry(classifier.getConfig().telemetry, {
+      id: "",
+      session: sessionId,
+      command: label,
+      file_path: target || null,
+      file_snippet: null,
+      decision: verdict.decision === "escalate" ? "force_ask" : verdict.decision,
+      source: fileVerdictSource(verdict),
+      reason: verdict.decision === "allow" ? "write stays inside the session's workspace" : verdict.reason,
+      latency_ms: Date.now() - started,
+      model: null,
+      injection_attempt: injectionPattern !== null,
+      injection_pattern: injectionPattern,
+      cwd: workspaces[0] ?? null,
+      tool: toolName,
+    });
     if (verdict.decision === "deny") return { decision: "deny", reason: verdict.reason };
-    if (verdict.decision === "escalate") return { decision: "force_ask", reason: `⚠️ SAFETY ESCALATION: ${verdict.reason}` };
+    if (verdict.decision === "escalate") {
+      // The gate raised this, not the model.
+      onEscalate({ kind: "file", path: target }, sessionId, true);
+      return { decision: "force_ask", reason: `⚠️ SAFETY ESCALATION: ${verdict.reason}` };
+    }
     onAllow({ kind: "file", path: target });
     return { decision: "allow" };
   }
@@ -229,6 +424,9 @@ async function decide(
       // escalation, and leaves it for the operator.
       return { decision: "allow" };
     }
+    if (outcome.decision === "force_ask" || outcome.decision === "ask") {
+      onEscalate({ kind: "command", command }, sessionId, outcome.gateRaised);
+    }
     return { decision: outcome.decision, reason: outcome.reason };
   } catch (err) {
     log(`agy: evaluation error: ${(err as Error).message}`);
@@ -240,6 +438,27 @@ async function decide(
   }
 }
 
+/**
+ * Handle Antigravity's PreInvocation hook: if the previous action timed out
+ * waiting for the operator, inject an explanation into the prompt.
+ */
+export function handleAgyPreInvocation(
+  input: { conversationId?: string; [key: string]: unknown }
+): { injectSteps: Array<{ ephemeralMessage: string }> } {
+  const timeoutRecord = consumeLastTimeout(input.conversationId);
+  if (timeoutRecord) {
+    const msg = timeoutMessage(timeoutRecord.target, timeoutRecord.timeoutMinutes ?? 5);
+    return {
+      injectSteps: [
+        {
+          ephemeralMessage: msg,
+        },
+      ],
+    };
+  }
+  return { injectSteps: [] };
+}
+
 export async function runAgyHook(classifier?: AutoClassifier): Promise<void> {
   const instance = classifier || new AutoClassifier();
 
@@ -248,6 +467,18 @@ export async function runAgyHook(classifier?: AutoClassifier): Promise<void> {
     chunks.push(chunk);
   }
   const rawInput = Buffer.concat(chunks).toString("utf-8");
+
+  try {
+    const trimmed = rawInput.trim();
+    if (trimmed) {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && ("invocationNum" in parsed || !parsed.toolCall)) {
+        const preInvOutput = handleAgyPreInvocation(parsed);
+        process.stdout.write(JSON.stringify(preInvOutput) + "\n");
+        return;
+      }
+    }
+  } catch {}
 
   const output = await handleAgyInput(rawInput, instance);
   process.stdout.write(JSON.stringify(output) + "\n");

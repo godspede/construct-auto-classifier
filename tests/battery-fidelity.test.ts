@@ -4,6 +4,9 @@ import {
   eventHookFieldsRead,
   beforeHookInput,
   beforeHookOutput,
+  fileToolBeforeHookOutput,
+  searchToolBeforeHookOutput,
+  patchToolBeforeHookOutput,
   permissionAskedEvent,
   flattenPaths,
   coversField,
@@ -13,7 +16,7 @@ import {
 /**
  * The load-bearing test for the certification battery's one requirement: it
  * is worthless if the requests it drives through the classifier differ in
- * any way from opencode's own. bench/run.ts drives the real
+ * any way from OpenCode's own. bench/run.ts drives the real
  * `AutoClassifier` through the real `createOpenCodePlugin` using the payload
  * builders in bench/payload.ts. This test fails the moment those builders'
  * output stops carrying a field src/adapters/opencode.ts actually reads --
@@ -28,13 +31,29 @@ import {
  * starts requiring it with no second list to remember to update.
  */
 describe("battery payload fidelity", () => {
-  it("tool.execute.before's payload carries every field the adapter reads off it", () => {
+  it("tool.execute.before's payload carries every field the adapter reads off it, across a bash call and a file-tool call", () => {
     const required = beforeHookFieldsRead();
     expect(required.length).toBeGreaterThan(0); // the extraction itself must not have gone silently empty
 
-    const input = beforeHookInput({ sessionId: "ses_1", callId: "call_1" });
-    const output = beforeHookOutput("echo hi", "/work/dir");
-    const paths = [...flattenPaths(input), ...flattenPaths(output)];
+    // No single call carries every field the adapter can read: a bash call
+    // never carries `args.filePath`, and a file-tool call never carries
+    // `args.command`. The battery drives every tool shape, so fidelity is
+    // the UNION of what each shape actually sends -- exactly what
+    // bench/run.ts's branches (bash, read/write/edit, grep/glob/list,
+    // patch/apply_patch) send today.
+    const bashInput = beforeHookInput({ sessionId: "ses_1", callId: "call_1" });
+    const bashOutput = beforeHookOutput("echo hi", "/work/dir");
+    const editInput = beforeHookInput({ sessionId: "ses_1", callId: "call_2" }, "edit");
+    const editOutput = fileToolBeforeHookOutput("/work/dir/x.ts", { oldString: "a", newString: "b" });
+    const writeInput = beforeHookInput({ sessionId: "ses_1", callId: "call_3" }, "write");
+    const writeOutput = fileToolBeforeHookOutput("/work/dir/y.ts", { content: "hello" });
+    const grepInput = beforeHookInput({ sessionId: "ses_1", callId: "call_4" }, "grep");
+    const grepOutput = searchToolBeforeHookOutput("/work/dir", "TODO");
+    const patchInput = beforeHookInput({ sessionId: "ses_1", callId: "call_5" }, "patch");
+    const patchOutput = patchToolBeforeHookOutput("*** Begin Patch\n*** Update File: x.ts\n@@\n-a\n+b\n*** End Patch");
+    const paths = [bashInput, bashOutput, editInput, editOutput, writeInput, writeOutput, grepInput, grepOutput, patchInput, patchOutput].flatMap((o) =>
+      flattenPaths(o)
+    );
 
     for (const field of required) {
       expect(coversField(paths, field)).toBe(true);
@@ -42,7 +61,22 @@ describe("battery payload fidelity", () => {
 
     // And pin the set itself, so a field silently dropped from the adapter
     // (shrinking `required`) is caught too, not just a field silently added.
-    expect(new Set(required)).toEqual(new Set(["tool", "sessionID", "callID", "args.command", "args.workdir"]));
+    expect(new Set(required)).toEqual(
+      new Set([
+        "tool",
+        "sessionID",
+        "callID",
+        "args.command",
+        "args.workdir",
+        "args.filePath",
+        "args.content",
+        "args.oldString",
+        "args.newString",
+        "args.path",
+        "args.pattern",
+        "args.patchText",
+      ])
+    );
   });
 
   it("the permission.asked event payload carries every field the adapter reads off it, in both callID shapes", () => {

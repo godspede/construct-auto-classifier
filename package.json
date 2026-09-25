@@ -1,8 +1,8 @@
 {
   "name": "construct-auto-classifier",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Effect-based safety gate for AI coding agents' shell commands (OpenCode, Antigravity): fast structural rules, then a model (TypeSafe's Jev or a chat LLM) that judges what a command does, not what it is called.",
+  "description": "Effect-based safety gate for AI coding agents (Antigravity, OpenCode): deterministic rules, then TypeSafe's Jev or any chat model judges what a shell command or file edit does, not what it is called.",
   "license": "Apache-2.0",
   "author": "godspede",
   "repository": {
@@ -19,29 +19,41 @@
   },
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "auto-classifier": "./bin/auto-classifier.js"
   },
   "exports": {
-    ".": "./dist/index.js",
-    "./opencode": "./dist/opencode-plugin.js",
-    "./opencode-plugin": "./dist/opencode-plugin.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./opencode": {
+      "types": "./dist/adapters/opencode.d.ts",
+      "default": "./dist/opencode-plugin.js"
+    },
+    "./opencode-plugin": {
+      "types": "./dist/adapters/opencode.d.ts",
+      "default": "./dist/opencode-plugin.js"
+    }
   },
   "scripts": {
-    "build": "bun build ./src/cli.ts --outfile ./dist/cli.js --target node && bun build ./src/adapters/opencode.ts --outfile ./dist/opencode-plugin.js --target node && bun build ./src/index.ts --outfile ./dist/index.js --target node",
+    "build": "bun build ./src/cli.ts --outfile ./dist/cli.js --target node && bun build ./src/adapters/opencode.ts --outfile ./dist/opencode-plugin.js --target node && bun build ./src/index.ts --outfile ./dist/index.js --target node && tsc --emitDeclarationOnly -p .",
     "build:binary": "bun build --compile --minify ./src/cli.ts --outfile ./dist/auto-classifier",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p ."
   },
   "keywords": [
-    "ai",
-    "security",
-    "llm",
-    "classifier",
-    "antigravity",
-    "opencode",
-    "safety",
+    "ai-safety",
+    "coding-agents",
     "guardrails",
+    "security",
+    "shell",
+    "command-classification",
+    "llm",
+    "opencode",
+    "antigravity",
+    "agy",
     "jev",
     "typesafe"
   ],
